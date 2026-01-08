@@ -1035,7 +1035,7 @@ export default function Home() {
                   className="text-gray-400 hover:text-gray-600 transition-colors"
                 >
                   <svg
-                    className="w-6 h-6"
+                    className="w-6 h-2"
                     fill="none"
                     stroke="currentColor"
                     viewBox="0 0 24 24"

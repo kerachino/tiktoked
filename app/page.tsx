@@ -5,13 +5,6 @@ import { ref, get, update, set } from "firebase/database";
 import { db } from "@/lib/firebase";
 import { TikTokAccount, SortField, SortOrder } from "@/types/tiktok";
 
-// デバッグ用のログ関数
-const debugLog = (...args: any[]) => {
-  if (process.env.NODE_ENV === "development") {
-    console.log("[DEBUG]", ...args);
-  }
-};
-
 export default function Home() {
   const [allAccounts, setAllAccounts] = useState<TikTokAccount[]>([]);
   const [displayedAccounts, setDisplayedAccounts] = useState<TikTokAccount[]>(

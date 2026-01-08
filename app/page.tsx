@@ -40,18 +40,23 @@ export default function Home() {
 
   // アカウント追加モーダル状態
   const [showAddModal, setShowAddModal] = useState(false);
-  const [showBulkAddModal, setShowBulkAddModal] = useState(false);
   const [newAccount, setNewAccount] = useState({
     accountName: "",
     accountId: "",
     amount: "0",
   });
-  const [bulkAccountsText, setBulkAccountsText] = useState("");
-  const [bulkAccounts, setBulkAccounts] = useState<
+  const [addingAccount, setAddingAccount] = useState(false);
+
+  // 一括追加モーダル状態
+  const [showBulkAddModal, setShowBulkAddModal] = useState(false);
+  const [bulkHtml, setBulkHtml] = useState("");
+  const [bulkProcessing, setBulkProcessing] = useState(false);
+  const [bulkPreview, setBulkPreview] = useState<
     Array<{ accountName: string; accountId: string }>
   >([]);
-  const [addingAccount, setAddingAccount] = useState(false);
-  const [addingBulkAccounts, setAddingBulkAccounts] = useState(false);
+  const [bulkDuplicates, setBulkDuplicates] = useState<
+    Array<{ accountName: string; accountId: string; reason: string }>
+  >([]);
 
   const observerRef = useRef<IntersectionObserver | null>(null);
   const loadMoreRef = useRef<HTMLDivElement>(null);
@@ -324,74 +329,6 @@ export default function Home() {
     setPage(1);
   };
 
-  // 一括追加テキストの解析
-  const parseBulkAccounts = useCallback((text: string) => {
-    const lines = text.split("\n").filter((line) => line.trim() !== "");
-    const accounts: Array<{ accountName: string; accountId: string }> = [];
-    const errors: string[] = [];
-
-    lines.forEach((line, index) => {
-      // カンマ区切り、タブ区切り、スペース区切りに対応
-      const parts = line
-        .split(/[,;\t]/)
-        .map((part) => part.trim())
-        .filter((part) => part !== "");
-
-      if (parts.length >= 2) {
-        // ID,アカウント名 または アカウント名,ID の形式に対応
-        let accountId = parts[0];
-        let accountName = parts[1];
-
-        // IDが"_"で始まる形式を想定（例: _123456）
-        // もし最初の部分がアカウント名っぽい場合（日本語や特殊文字を含む）なら順序を入れ替え
-        if (
-          accountId.includes("@") ||
-          accountId.includes(" ") ||
-          accountId.includes("。") ||
-          accountId.includes("、") ||
-          /[\u3000-\u303F\u3040-\u309F\u30A0-\u30FF\uFF00-\uFFEF\u4E00-\u9FAF]/.test(
-            accountId
-          )
-        ) {
-          // 日本語や特殊文字を含む場合はアカウント名と判断
-          const temp = accountId;
-          accountId = accountName;
-          accountName = temp;
-        }
-
-        accounts.push({ accountName, accountId });
-      } else if (parts.length === 1) {
-        errors.push(
-          `行 ${
-            index + 1
-          }: 形式が不正です (ID,アカウント名 の形式で入力してください)`
-        );
-      }
-    });
-
-    return { accounts, errors };
-  }, []);
-
-  // 一括追加テキストの変更ハンドラー
-  const handleBulkAccountsTextChange = (text: string) => {
-    setBulkAccountsText(text);
-    const { accounts, errors } = parseBulkAccounts(text);
-    setBulkAccounts(accounts);
-
-    if (errors.length > 0 && text.trim() !== "") {
-      // エラーがある場合はコンソールに表示（UIには表示しない）
-      console.warn("一括追加のエラー:", errors);
-    }
-  };
-
-  // 重複チェック
-  const checkDuplicates = (accountId: string, accountName: string) => {
-    return allAccounts.some(
-      (account) =>
-        account.accountId === accountId || account.accountName === accountName
-    );
-  };
-
   // 無限スクロールの設定 - IntersectionObserverの初期化
   useEffect(() => {
     if (!loadMoreRef.current || !hasMore) {
@@ -535,12 +472,6 @@ export default function Home() {
       return;
     }
 
-    // 重複チェック
-    if (checkDuplicates(newAccount.accountId, newAccount.accountName)) {
-      alert("このIDまたはアカウント名は既に登録されています");
-      return;
-    }
-
     try {
       setAddingAccount(true);
 
@@ -600,112 +531,194 @@ export default function Home() {
     }
   };
 
-  // アカウント一括追加処理
-  const handleBulkAddAccounts = async () => {
-    if (bulkAccounts.length === 0) {
-      alert("有効なアカウントデータがありません");
-      return;
-    }
+  // HTMLからアカウント情報を抽出してプレビュー
+  const parseBulkHtml = (html: string) => {
+    const tempDiv = document.createElement("div");
+    tempDiv.innerHTML = html;
 
-    try {
-      setAddingBulkAccounts(true);
+    // TikTokのHTML構造からアカウント情報を抽出
+    const accountElements = tempDiv.querySelectorAll(
+      "li .css-ra8pvn-5e6d46e3--DivUserItem"
+    );
+    const accounts: Array<{ accountName: string; accountId: string }> = [];
 
-      // 重複チェック
-      const duplicateAccounts = bulkAccounts.filter((account) =>
-        checkDuplicates(account.accountId, account.accountName)
+    accountElements.forEach((element) => {
+      // アカウント名を取得（SpanNicknameクラス）
+      const nicknameElement = element.querySelector(
+        ".css-spk7wm-5e6d46e3--SpanNickname"
       );
+      const accountName = nicknameElement?.textContent?.trim() || "";
 
-      if (duplicateAccounts.length > 0) {
-        const duplicateList = duplicateAccounts
-          .map((acc) => `ID: ${acc.accountId}, 名前: ${acc.accountName}`)
-          .join("\n");
-        const shouldContinue = confirm(
-          `${duplicateAccounts.length}件の重複アカウントが見つかりました:\n\n${duplicateList}\n\n重複アカウントをスキップして続行しますか？`
-        );
+      // IDを取得（PUniqueIdクラス）
+      const uniqueIdElement = element.querySelector(
+        ".css-8sip1d-5e6d46e3--PUniqueId"
+      );
+      const accountId = uniqueIdElement?.textContent?.trim() || "";
 
-        if (!shouldContinue) {
-          setAddingBulkAccounts(false);
+      // またはリンクからIDを取得
+      const linkElement = element.querySelector('a[href^="/@"]');
+      if (linkElement) {
+        const href = linkElement.getAttribute("href") || "";
+        const idFromHref = href.replace("/@", "").trim();
+        if (idFromHref && !accountId) {
+          // リンクから取得したIDを使用
+          accounts.push({
+            accountName,
+            accountId: idFromHref,
+          });
           return;
         }
       }
 
-      // 重複しないアカウントのみを抽出
-      const uniqueAccounts = bulkAccounts.filter(
-        (account) => !checkDuplicates(account.accountId, account.accountName)
-      );
-
-      if (uniqueAccounts.length === 0) {
-        alert("追加可能な新しいアカウントがありません（すべて重複しています）");
-        setAddingBulkAccounts(false);
-        return;
+      if (accountName && accountId) {
+        accounts.push({ accountName, accountId });
       }
+    });
 
-      // 新しいキーを生成
+    return accounts;
+  };
+
+  // 一括追加のHTMLを解析してプレビュー
+  const handleBulkHtmlChange = (html: string) => {
+    setBulkHtml(html);
+
+    if (html.trim()) {
+      const accounts = parseBulkHtml(html);
+      setBulkPreview(accounts);
+
+      // 重複チェック
+      const duplicates: Array<{
+        accountName: string;
+        accountId: string;
+        reason: string;
+      }> = [];
+      accounts.forEach((account, index) => {
+        // 既存のアカウントと比較
+        const existingAccount = allAccounts.find(
+          (acc) => acc.accountId === account.accountId
+        );
+
+        if (existingAccount) {
+          duplicates.push({
+            ...account,
+            reason: `ID "${account.accountId}" が既に存在します`,
+          });
+        }
+
+        // プレビュー内での重複チェック
+        const duplicateInPreview = accounts.find(
+          (acc, idx) => idx !== index && acc.accountId === account.accountId
+        );
+
+        if (
+          duplicateInPreview &&
+          !duplicates.some((d) => d.accountId === account.accountId)
+        ) {
+          duplicates.push({
+            ...account,
+            reason: `プレビュー内でIDが重複しています`,
+          });
+        }
+      });
+
+      setBulkDuplicates(duplicates);
+    } else {
+      setBulkPreview([]);
+      setBulkDuplicates([]);
+    }
+  };
+
+  // 一括アカウント追加処理
+  const handleBulkAddAccounts = async () => {
+    if (!bulkHtml.trim()) {
+      alert("HTMLを入力してください");
+      return;
+    }
+
+    const accounts = parseBulkHtml(bulkHtml);
+    if (accounts.length === 0) {
+      alert("有効なアカウント情報が見つかりませんでした");
+      return;
+    }
+
+    try {
+      setBulkProcessing(true);
+
+      // 既存の最大キーを取得
       const maxKey = allAccounts.reduce((max, acc) => {
         const keyNum = parseInt(acc.key) || 0;
         return keyNum > max ? keyNum : max;
       }, 0);
 
-      let currentKey = maxKey + 1;
-      const newAccountsData: { [key: string]: any } = {};
-      const newAccountsLocal: TikTokAccount[] = [];
-
-      // 今日の日付をYYYY/MM/DD形式で取得
+      let nextKey = maxKey + 1;
       const today = new Date();
       const formattedDate = `${today.getFullYear()}/${(today.getMonth() + 1)
         .toString()
         .padStart(2, "0")}/${today.getDate().toString().padStart(2, "0")}`;
 
-      // 新しいアカウントデータを準備
-      uniqueAccounts.forEach((account, index) => {
-        const newKey = currentKey.toString();
+      const newAccounts: TikTokAccount[] = [];
+      let addedCount = 0;
+      let skippedCount = 0;
 
-        newAccountsData[newKey] = {
-          AccountName: account.accountName.trim(),
-          AccountID: account.accountId.trim(),
-          Amount: "0", // 一括追加時は初期値0
+      // 重複を除いてアカウントを追加
+      for (const account of accounts) {
+        // 重複チェック
+        const existingAccount = allAccounts.find(
+          (acc) => acc.accountId === account.accountId
+        );
+
+        if (existingAccount) {
+          skippedCount++;
+          continue;
+        }
+
+        // 新しいアカウントデータ
+        const accountData = {
+          AccountName: account.accountName,
+          AccountID: account.accountId,
+          Amount: "0", // 初期値は0
           LastCheckedDate: formattedDate,
           AddedDate: formattedDate,
         };
 
-        newAccountsLocal.push({
-          key: newKey,
-          accountName: account.accountName.trim(),
-          accountId: account.accountId.trim(),
+        // Firebaseに追加
+        const accountRef = ref(db, `__collections__/myfollow/${nextKey}`);
+        await set(accountRef, accountData);
+
+        // ローカル状態に追加
+        newAccounts.push({
+          key: nextKey.toString(),
+          accountName: account.accountName,
+          accountId: account.accountId,
           amount: "0",
           lastCheckedDate: formattedDate,
           addedDate: formattedDate,
         });
 
-        currentKey++;
-      });
+        nextKey++;
+        addedCount++;
+      }
 
-      // Firebaseに一括追加
-      const updates: { [key: string]: any } = {};
-      Object.keys(newAccountsData).forEach((key) => {
-        updates[`__collections__/myfollow/${key}`] = newAccountsData[key];
-      });
+      // ローカル状態を更新
+      if (newAccounts.length > 0) {
+        setAllAccounts((prev) => [...prev, ...newAccounts]);
+      }
 
-      // Firebaseに更新を適用
-      const dbRef = ref(db);
-      await update(dbRef, updates);
-
-      // ローカル状態に追加
-      setAllAccounts((prev) => [...prev, ...newAccountsLocal]);
-
-      // モーダルを閉じてテキストをリセット
+      // モーダルを閉じてフォームをリセット
       setShowBulkAddModal(false);
-      setBulkAccountsText("");
-      setBulkAccounts([]);
+      setBulkHtml("");
+      setBulkPreview([]);
+      setBulkDuplicates([]);
 
+      // 結果を通知
       alert(
-        `${uniqueAccounts.length}件のアカウントを追加しました（${duplicateAccounts.length}件は重複のためスキップ）`
+        `${addedCount}件のアカウントを追加しました（${skippedCount}件スキップ）`
       );
     } catch (error) {
       console.error("一括追加エラー:", error);
-      alert("アカウントの一括追加に失敗しました。");
+      alert("一括追加に失敗しました。コンソールを確認してください。");
     } finally {
-      setAddingBulkAccounts(false);
+      setBulkProcessing(false);
     }
   };
 
@@ -800,7 +813,7 @@ export default function Home() {
             >
               データ更新
             </button>
-            <div className="flex items-center gap-2">
+            <div className="flex space-x-2">
               <button
                 onClick={() => setShowAddModal(true)}
                 className="text-sm bg-blue-600 text-white px-3 py-1 rounded-full hover:bg-blue-700 transition-colors flex items-center"
@@ -818,11 +831,11 @@ export default function Home() {
                     d="M12 4v16m8-8H4"
                   />
                 </svg>
-                追加
+                アカウント追加
               </button>
               <button
                 onClick={() => setShowBulkAddModal(true)}
-                className="text-sm bg-green-600 text-white px-3 py-1 rounded-full hover:bg-green-700 transition-colors flex items-center"
+                className="text-sm bg-purple-600 text-white px-3 py-1 rounded-full hover:bg-purple-700 transition-colors flex items-center"
               >
                 <svg
                   className="w-4 h-4 mr-1"
@@ -834,7 +847,7 @@ export default function Home() {
                     strokeLinecap="round"
                     strokeLinejoin="round"
                     strokeWidth={2}
-                    d="M12 4v16m8-8H4"
+                    d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
                   />
                 </svg>
                 一括追加
@@ -1363,21 +1376,17 @@ export default function Home() {
         </div>
       )}
 
-      {/* アカウント一括追加モーダル */}
+      {/* 一括追加モーダル */}
       {showBulkAddModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-xl shadow-lg max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+          <div className="bg-white rounded-xl shadow-lg max-w-3xl w-full max-h-[90vh] overflow-y-auto">
             <div className="p-6">
               <div className="flex justify-between items-center mb-6">
                 <h3 className="text-xl font-bold text-gray-800">
                   アカウント一括追加
                 </h3>
                 <button
-                  onClick={() => {
-                    setShowBulkAddModal(false);
-                    setBulkAccountsText("");
-                    setBulkAccounts([]);
-                  }}
+                  onClick={() => setShowBulkAddModal(false)}
                   className="text-gray-400 hover:text-gray-600 transition-colors"
                 >
                   <svg
@@ -1399,104 +1408,143 @@ export default function Home() {
               <div className="space-y-6">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
-                    アカウントデータ（ID,アカウント名 の形式）{" "}
-                    <span className="text-red-500">*</span>
+                    TikTokのHTMLを貼り付けてください
                   </label>
                   <textarea
-                    value={bulkAccountsText}
-                    onChange={(e) =>
-                      handleBulkAccountsTextChange(e.target.value)
-                    }
-                    placeholder={`例:\n_123456,かわいい猫ちゃん\n_789012,楽しい犬ちゃん\n_345678,面白い鳥ちゃん\n\n形式:\n• 1行に1アカウント\n• ID,アカウント名 の順（カンマ区切り）\n• タブ区切り、セミコロン区切りも可能`}
-                    rows={10}
-                    className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 font-mono text-sm"
+                    value={bulkHtml}
+                    onChange={(e) => handleBulkHtmlChange(e.target.value)}
+                    placeholder="TikTokのフォロー/フォロワーリストのHTMLをコピーして貼り付けてください"
+                    rows={8}
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 font-mono text-sm"
                   />
-                  <div className="mt-2 text-sm text-gray-500">
-                    <p>
-                      現在 {bulkAccounts.length} 件のアカウントを検出しました
-                    </p>
-                    {bulkAccounts.length > 0 && (
-                      <p className="mt-1 text-blue-600">
-                        ※ 重複チェックは追加時に自動で行われます
-                      </p>
-                    )}
-                  </div>
+                  <p className="mt-2 text-xs text-gray-500">
+                    TikTokのフォロー/フォロワーリストページで右クリック →
+                    「ページのソースを表示」または開発者ツールからHTMLをコピーしてください
+                  </p>
                 </div>
 
                 {/* プレビュー */}
-                {bulkAccounts.length > 0 && (
-                  <div className="border border-gray-200 rounded-lg overflow-hidden">
-                    <div className="bg-gray-50 px-4 py-2 border-b border-gray-200">
+                {bulkPreview.length > 0 && (
+                  <div>
+                    <div className="flex items-center justify-between mb-3">
                       <h4 className="font-medium text-gray-700">
-                        追加予定アカウント（プレビュー）
+                        検出されたアカウント: {bulkPreview.length}件
                       </h4>
+                      <div className="text-sm text-gray-500">
+                        {bulkDuplicates.length > 0 && (
+                          <span className="text-orange-600">
+                            {bulkDuplicates.length}件の重複あり
+                          </span>
+                        )}
+                      </div>
                     </div>
-                    <div className="max-h-60 overflow-y-auto">
+
+                    <div className="bg-gray-50 rounded-lg border border-gray-200 max-h-60 overflow-y-auto">
                       <table className="min-w-full divide-y divide-gray-200">
                         <thead className="bg-gray-100">
                           <tr>
                             <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">
-                              ID
-                            </th>
-                            <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">
                               アカウント名
                             </th>
                             <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">
-                              重複チェック
+                              ID
+                            </th>
+                            <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">
+                              ステータス
                             </th>
                           </tr>
                         </thead>
                         <tbody className="bg-white divide-y divide-gray-200">
-                          {bulkAccounts.slice(0, 20).map((account, index) => {
-                            const isDuplicate = checkDuplicates(
-                              account.accountId,
-                              account.accountName
+                          {bulkPreview.map((account, index) => {
+                            const isDuplicate = bulkDuplicates.some(
+                              (d) => d.accountId === account.accountId
                             );
+
                             return (
                               <tr
                                 key={index}
                                 className={
-                                  isDuplicate ? "bg-red-50" : "hover:bg-gray-50"
+                                  isDuplicate
+                                    ? "bg-orange-50"
+                                    : "hover:bg-gray-50"
                                 }
                               >
-                                <td className="px-4 py-2 whitespace-nowrap text-sm font-mono">
+                                <td className="px-4 py-2 text-sm">
+                                  <div className="font-medium">
+                                    {account.accountName || "（未設定）"}
+                                  </div>
+                                </td>
+                                <td className="px-4 py-2 text-sm font-mono">
                                   {account.accountId}
                                 </td>
-                                <td className="px-4 py-2 whitespace-nowrap text-sm">
-                                  {account.accountName}
-                                </td>
-                                <td className="px-4 py-2 whitespace-nowrap">
+                                <td className="px-4 py-2 text-sm">
                                   {isDuplicate ? (
-                                    <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-red-100 text-red-800">
+                                    <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-orange-100 text-orange-800">
+                                      <svg
+                                        className="w-3 h-3 mr-1"
+                                        fill="currentColor"
+                                        viewBox="0 0 20 20"
+                                      >
+                                        <path
+                                          fillRule="evenodd"
+                                          d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z"
+                                          clipRule="evenodd"
+                                        />
+                                      </svg>
                                       重複
                                     </span>
                                   ) : (
                                     <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
-                                      新規
+                                      <svg
+                                        className="w-3 h-3 mr-1"
+                                        fill="currentColor"
+                                        viewBox="0 0 20 20"
+                                      >
+                                        <path
+                                          fillRule="evenodd"
+                                          d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
+                                          clipRule="evenodd"
+                                        />
+                                      </svg>
+                                      追加可能
                                     </span>
                                   )}
                                 </td>
                               </tr>
                             );
                           })}
-                          {bulkAccounts.length > 20 && (
-                            <tr>
-                              <td
-                                colSpan={3}
-                                className="px-4 py-2 text-center text-sm text-gray-500"
-                              >
-                                他 {bulkAccounts.length - 20}{" "}
-                                件のアカウントを表示しています...
-                              </td>
-                            </tr>
-                          )}
                         </tbody>
                       </table>
                     </div>
+
+                    {/* 重複の詳細 */}
+                    {bulkDuplicates.length > 0 && (
+                      <div className="mt-3">
+                        <h5 className="text-sm font-medium text-orange-700 mb-2">
+                          重複アカウントの詳細:
+                        </h5>
+                        <ul className="text-xs text-gray-600 space-y-1">
+                          {bulkDuplicates.map((dup, index) => (
+                            <li key={index} className="flex items-start">
+                              <span className="inline-block w-2 h-2 bg-orange-400 rounded-full mt-1 mr-2"></span>
+                              <span>
+                                <span className="font-medium">
+                                  {dup.accountName}
+                                </span>
+                                <span className="font-mono mx-1">
+                                  ({dup.accountId})
+                                </span>
+                                - {dup.reason}
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
                   </div>
                 )}
 
-                <div className="pt-4 border-t border-gray-200">
+                <div className="border-t border-gray-200 pt-4">
                   <div className="text-sm text-gray-600 mb-4">
                     <p className="font-medium">
                       追加される情報（各アカウント）:
@@ -1505,29 +1553,26 @@ export default function Home() {
                       <li>• 最終確認日: 今日の日付</li>
                       <li>• 追加日: 今日の日付</li>
                       <li>• Amount: 0（初期値）</li>
-                      <li>• 自動的にID採番されます</li>
+                      <li>• 重複するIDは自動的にスキップされます</li>
+                      <li>• 自動的に連番でIDが採番されます</li>
                     </ul>
                   </div>
                 </div>
 
                 <div className="flex justify-end space-x-3 pt-4">
                   <button
-                    onClick={() => {
-                      setShowBulkAddModal(false);
-                      setBulkAccountsText("");
-                      setBulkAccounts([]);
-                    }}
+                    onClick={() => setShowBulkAddModal(false)}
                     className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
-                    disabled={addingBulkAccounts}
+                    disabled={bulkProcessing}
                   >
                     キャンセル
                   </button>
                   <button
                     onClick={handleBulkAddAccounts}
-                    disabled={addingBulkAccounts || bulkAccounts.length === 0}
-                    className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center"
+                    disabled={bulkProcessing || bulkPreview.length === 0}
+                    className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center"
                   >
-                    {addingBulkAccounts ? (
+                    {bulkProcessing ? (
                       <>
                         <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
                         追加中...
@@ -1535,7 +1580,7 @@ export default function Home() {
                     ) : (
                       <>
                         <svg
-                          className="w-4 h-4 mr-1"
+                          className="w-4 h-4 mr-2"
                           fill="none"
                           stroke="currentColor"
                           viewBox="0 0 24 24"
@@ -1544,10 +1589,14 @@ export default function Home() {
                             strokeLinecap="round"
                             strokeLinejoin="round"
                             strokeWidth={2}
-                            d="M12 4v16m8-8H4"
+                            d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
                           />
                         </svg>
-                        {bulkAccounts.length}件を追加
+                        {bulkDuplicates.length > 0
+                          ? `重複を除いて${
+                              bulkPreview.length - bulkDuplicates.length
+                            }件を追加`
+                          : `${bulkPreview.length}件を追加`}
                       </>
                     )}
                   </button>

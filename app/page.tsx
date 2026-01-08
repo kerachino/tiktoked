@@ -3,17 +3,23 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { ref, get, update, set } from "firebase/database";
 import { db } from "@/lib/firebase";
-import {
-  TikTokAccount,
-  SortField,
-  SortOrder,
-  BulkPreviewAccount,
-  BulkDuplicateAccount,
-} from "@/types/tiktok";
+import { TikTokAccount, SortField, SortOrder } from "@/types/tiktok";
 
-// デバッグ用のログ
+// デバッグ用のログ関数
 const debugLog = (...args: any[]) => {
-  console.log("[DEBUG]", ...args);
+  if (process.env.NODE_ENV === "development") {
+    console.log("[DEBUG]", ...args);
+  }
+};
+
+// Amountの意味を定義
+const AMOUNT_MEANINGS = {
+  "-2": "削除済みアカウント",
+  "-1": "無視してよいアカウント",
+  "0": "通常アカウント（未チェック）",
+  "1": "1回チェック済み",
+  "2": "2回チェック済み",
+  // ... それ以上は単純なカウント
 };
 
 export default function Home() {
@@ -55,10 +61,17 @@ export default function Home() {
   const [showBulkAddModal, setShowBulkAddModal] = useState(false);
   const [bulkHtml, setBulkHtml] = useState("");
   const [bulkProcessing, setBulkProcessing] = useState(false);
-  const [bulkPreview, setBulkPreview] = useState<BulkPreviewAccount[]>([]);
-  const [bulkDuplicates, setBulkDuplicates] = useState<BulkDuplicateAccount[]>(
-    []
-  );
+  const [bulkPreview, setBulkPreview] = useState<
+    Array<{ accountName: string; accountId: string; previewKey: string }>
+  >([]);
+  const [bulkDuplicates, setBulkDuplicates] = useState<
+    Array<{
+      accountName: string;
+      accountId: string;
+      previewKey: string;
+      reason: string;
+    }>
+  >([]);
 
   const observerRef = useRef<IntersectionObserver | null>(null);
   const loadMoreRef = useRef<HTMLDivElement>(null);
@@ -296,6 +309,38 @@ export default function Home() {
     return sortOrder === "asc" ? "↑" : "↓";
   };
 
+  // Amountの意味を取得
+  const getAmountMeaning = (amount: string) => {
+    const amountNum = parseInt(amount) || 0;
+    if (amountNum >= -2 && amountNum <= 2) {
+      return (
+        AMOUNT_MEANINGS[amount as keyof typeof AMOUNT_MEANINGS] ||
+        `${amountNum}回チェック済み`
+      );
+    } else if (amountNum > 2) {
+      return `${amountNum}回チェック済み`;
+    } else {
+      return "無効な値";
+    }
+  };
+
+  // Amountのスタイルを取得
+  const getAmountStyle = (amount: string) => {
+    const amountNum = parseInt(amount) || 0;
+
+    if (amountNum === -2) {
+      return "bg-gray-100 text-gray-600"; // 削除済み
+    } else if (amountNum === -1) {
+      return "bg-yellow-100 text-yellow-700"; // 無視してよい
+    } else if (amountNum === 0) {
+      return "bg-blue-100 text-blue-700"; // 未チェック
+    } else if (amountNum > 0) {
+      return "bg-green-100 text-green-700"; // チェック済み
+    } else {
+      return "bg-red-100 text-red-700"; // その他（エラー）
+    }
+  };
+
   // 検索処理
   const handleSearch = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const value = e.target.value;
@@ -431,7 +476,9 @@ export default function Home() {
       // 現在のAmountを数値に変換（空の場合は0）
       const currentAmount =
         account.amount && account.amount !== "" ? parseInt(account.amount) : 0;
-      const newAmount = Math.max(0, currentAmount + delta);
+
+      // -2まで減らせるようにする
+      const newAmount = Math.max(-2, currentAmount + delta);
 
       // 今日の日付をYYYY/MM/DD形式で取得
       const today = new Date();
@@ -477,13 +524,14 @@ export default function Home() {
     try {
       setAddingAccount(true);
 
-      // 新しいキーを生成（既存の最大キー + 1）
-      const maxKey = allAccounts.reduce((max, acc) => {
-        const keyNum = parseInt(acc.key) || 0;
-        return keyNum > max ? keyNum : max;
-      }, 0);
+      // 既存の全キーを取得して数値に変換
+      const existingKeys = allAccounts.map((acc) => parseInt(acc.key) || 0);
 
-      const newKey = (maxKey + 1).toString();
+      // 既存のキーが存在する場合は最大値、なければ0から開始
+      const maxKey = existingKeys.length > 0 ? Math.max(...existingKeys) : 0;
+
+      // 降順でキーを振り分け（常に最大値+1）
+      const newKey = maxKey + 1;
 
       // 今日の日付をYYYY/MM/DD形式で取得
       const today = new Date();
@@ -506,7 +554,7 @@ export default function Home() {
 
       // ローカル状態に追加
       const newAccountObj: TikTokAccount = {
-        key: newKey,
+        key: newKey.toString(),
         accountName: newAccount.accountName.trim(),
         accountId: newAccount.accountId.trim(),
         amount: newAccount.amount || "0",
@@ -580,7 +628,7 @@ export default function Home() {
     return accounts;
   };
 
-  // 一括アカウント追加処理
+  // 一括追加のHTMLを解析してプレビュー
   const handleBulkHtmlChange = (html: string) => {
     setBulkHtml(html);
 
@@ -759,13 +807,13 @@ export default function Home() {
   // 未確認の日付を強調表示するスタイル
   const getDateCellStyle = (dateString: string) => {
     if (!dateString || dateString.trim() === "") {
-      return "px-6 py-4 whitespace-nowrap bg-yellow-50";
+      return "px-4 py-3 whitespace-nowrap bg-yellow-50";
     }
 
     try {
       const date = new Date(dateString);
       if (isNaN(date.getTime())) {
-        return "px-6 py-4 whitespace-nowrap bg-yellow-50";
+        return "px-4 py-3 whitespace-nowrap bg-yellow-50";
       }
 
       const today = new Date();
@@ -773,15 +821,15 @@ export default function Home() {
       const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
 
       if (diffDays > 30) {
-        return "px-6 py-4 whitespace-nowrap bg-red-50";
+        return "px-4 py-3 whitespace-nowrap bg-red-50";
       } else if (diffDays > 7) {
-        return "px-6 py-4 whitespace-nowrap bg-orange-50";
+        return "px-4 py-3 whitespace-nowrap bg-orange-50";
       }
     } catch {
       // 日付パースエラー時はデフォルトスタイル
     }
 
-    return "px-6 py-4 whitespace-nowrap";
+    return "px-4 py-3 whitespace-nowrap";
   };
 
   // 検索とフィルターのリセット
@@ -806,38 +854,38 @@ export default function Home() {
   const currentPage = Math.min(page, totalPages);
 
   return (
-    <div className="min-h-screen bg-gray-50 p-4 md:p-8" ref={containerRef}>
-      <div className="max-w-6xl mx-auto">
-        <header className="mb-8">
-          <h1 className="text-3xl font-bold text-gray-800">
+    <div className="min-h-screen bg-gray-50 p-3 md:p-8" ref={containerRef}>
+      <div className="max-w-7xl mx-auto">
+        <header className="mb-6 md:mb-8">
+          <h1 className="text-2xl md:text-3xl font-bold text-gray-800">
             TikTokアカウント管理
           </h1>
-          <div className="mt-2 flex flex-wrap items-center gap-4">
-            <p className="text-gray-600">
+          <div className="mt-2 flex flex-wrap items-center gap-2 md:gap-4">
+            <p className="text-sm md:text-base text-gray-600">
               全{sortedAccounts.length}件のアカウント（
               {displayedAccounts.length}件表示中）
               {hasMore && `（さらに読み込み可能）`}
             </p>
-            <div className="text-sm bg-blue-100 text-blue-800 px-3 py-1 rounded-full">
+            <div className="text-xs md:text-sm bg-blue-100 text-blue-800 px-2 md:px-3 py-1 rounded-full">
               ソート: {getSortFieldName(sortField)} (
               {sortOrder === "asc" ? "昇順" : "降順"})
             </div>
-            <div className="text-sm bg-green-100 text-green-800 px-3 py-1 rounded-full">
+            <div className="text-xs md:text-sm bg-green-100 text-green-800 px-2 md:px-3 py-1 rounded-full">
               ページ: {currentPage}/{totalPages}
             </div>
             <button
               onClick={fetchAllData}
-              className="text-sm bg-gray-100 text-gray-700 px-3 py-1 rounded-full hover:bg-gray-200 transition-colors"
+              className="text-xs md:text-sm bg-gray-100 text-gray-700 px-2 md:px-3 py-1 rounded-full hover:bg-gray-200 transition-colors"
             >
               データ更新
             </button>
             <div className="flex space-x-2">
               <button
                 onClick={() => setShowAddModal(true)}
-                className="text-sm bg-blue-600 text-white px-3 py-1 rounded-full hover:bg-blue-700 transition-colors flex items-center"
+                className="text-xs md:text-sm bg-blue-600 text-white px-2 md:px-3 py-1 rounded-full hover:bg-blue-700 transition-colors flex items-center"
               >
                 <svg
-                  className="w-4 h-4 mr-1"
+                  className="w-3 h-3 md:w-4 md:h-4 mr-1"
                   fill="none"
                   stroke="currentColor"
                   viewBox="0 0 24 24"
@@ -849,14 +897,14 @@ export default function Home() {
                     d="M12 4v16m8-8H4"
                   />
                 </svg>
-                アカウント追加
+                追加
               </button>
               <button
                 onClick={() => setShowBulkAddModal(true)}
-                className="text-sm bg-purple-600 text-white px-3 py-1 rounded-full hover:bg-purple-700 transition-colors flex items-center"
+                className="text-xs md:text-sm bg-purple-600 text-white px-2 md:px-3 py-1 rounded-full hover:bg-purple-700 transition-colors flex items-center"
               >
                 <svg
-                  className="w-4 h-4 mr-1"
+                  className="w-3 h-3 md:w-4 md:h-4 mr-1"
                   fill="none"
                   stroke="currentColor"
                   viewBox="0 0 24 24"
@@ -868,17 +916,19 @@ export default function Home() {
                     d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
                   />
                 </svg>
-                一括追加
+                一括
               </button>
             </div>
           </div>
 
           {error && (
-            <div className="mt-4 p-4 bg-red-50 border border-red-200 rounded-lg">
-              <p className="text-red-700 font-semibold">エラー: {error}</p>
+            <div className="mt-4 p-3 md:p-4 bg-red-50 border border-red-200 rounded-lg">
+              <p className="text-sm md:text-base text-red-700 font-semibold">
+                エラー: {error}
+              </p>
               <button
                 onClick={fetchAllData}
-                className="mt-2 px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600"
+                className="mt-2 px-3 md:px-4 py-1 md:py-2 bg-blue-500 text-white rounded hover:bg-blue-600 text-sm"
               >
                 再読み込み
               </button>
@@ -887,28 +937,28 @@ export default function Home() {
         </header>
 
         {/* 検索とフィルターセクション */}
-        <div className="mb-6 bg-white rounded-xl shadow-md p-4 md:p-6">
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div className="mb-4 md:mb-6 bg-white rounded-lg md:rounded-xl shadow-md p-3 md:p-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 md:gap-4">
             {/* 検索バー */}
-            <div className="space-y-2">
-              <label className="block text-sm font-medium text-gray-700">
+            <div className="space-y-1 md:space-y-2">
+              <label className="block text-xs md:text-sm font-medium text-gray-700">
                 検索
               </label>
-              <div className="flex space-x-2">
+              <div className="flex space-x-1 md:space-x-2">
                 <div className="flex border rounded-lg overflow-hidden">
                   <button
                     onClick={() => handleSearchTypeChange("accountName")}
-                    className={`px-3 py-2 text-sm ${
+                    className={`px-2 md:px-3 py-1 md:py-2 text-xs md:text-sm ${
                       searchType === "accountName"
                         ? "bg-blue-600 text-white"
                         : "bg-gray-100 text-gray-700 hover:bg-gray-200"
                     }`}
                   >
-                    アカウント名
+                    名前
                   </button>
                   <button
                     onClick={() => handleSearchTypeChange("accountId")}
-                    className={`px-3 py-2 text-sm ${
+                    className={`px-2 md:px-3 py-1 md:py-2 text-xs md:text-sm ${
                       searchType === "accountId"
                         ? "bg-blue-600 text-white"
                         : "bg-gray-100 text-gray-700 hover:bg-gray-200"
@@ -922,18 +972,18 @@ export default function Home() {
                   value={searchQuery}
                   onChange={handleSearch}
                   placeholder={`${
-                    searchType === "accountName" ? "アカウント名" : "ID"
+                    searchType === "accountName" ? "名前" : "ID"
                   }で検索...`}
-                  className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  className="flex-1 px-3 md:px-4 py-1 md:py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
                 />
               </div>
             </div>
 
             {/* 日付フィルター */}
-            <div className="space-y-2">
+            <div className="space-y-1 md:space-y-2">
               <div className="flex items-center justify-between">
-                <label className="block text-sm font-medium text-gray-700">
-                  追加日で絞り込み
+                <label className="block text-xs md:text-sm font-medium text-gray-700">
+                  追加日絞り込み
                 </label>
                 <div className="flex items-center">
                   <input
@@ -942,12 +992,14 @@ export default function Home() {
                     onChange={(e) =>
                       handleDateFilterChange("enabled", e.target.checked)
                     }
-                    className="h-4 w-4 text-blue-600 rounded"
+                    className="h-3 w-3 md:h-4 md:w-4 text-blue-600 rounded"
                   />
-                  <span className="ml-2 text-sm text-gray-600">有効</span>
+                  <span className="ml-1 md:ml-2 text-xs md:text-sm text-gray-600">
+                    有効
+                  </span>
                 </div>
               </div>
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-2 gap-1 md:gap-2">
                 <div>
                   <label className="block text-xs text-gray-500 mb-1">
                     開始日
@@ -959,7 +1011,7 @@ export default function Home() {
                       handleDateFilterChange("startDate", e.target.value)
                     }
                     disabled={!dateFilter.enabled}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100 disabled:text-gray-400"
+                    className="w-full px-2 md:px-3 py-1 md:py-2 border border-gray-300 rounded-lg text-xs md:text-sm disabled:bg-gray-100 disabled:text-gray-400"
                   />
                 </div>
                 <div>
@@ -973,23 +1025,23 @@ export default function Home() {
                       handleDateFilterChange("endDate", e.target.value)
                     }
                     disabled={!dateFilter.enabled}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100 disabled:text-gray-400"
+                    className="w-full px-2 md:px-3 py-1 md:py-2 border border-gray-300 rounded-lg text-xs md:text-sm disabled:bg-gray-100 disabled:text-gray-400"
                   />
                 </div>
               </div>
             </div>
 
             {/* アクションボタン */}
-            <div className="flex items-end space-x-2">
+            <div className="flex items-end space-x-1 md:space-x-2">
               <button
                 onClick={resetFilters}
-                className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors text-sm"
+                className="px-2 md:px-4 py-1 md:py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors text-xs md:text-sm"
               >
-                フィルターをリセット
+                フィルターリセット
               </button>
               {(searchQuery || dateFilter.enabled) && (
-                <div className="text-sm text-gray-600">
-                  {sortedAccounts.length}件が見つかりました
+                <div className="text-xs md:text-sm text-gray-600">
+                  {sortedAccounts.length}件
                 </div>
               )}
             </div>
@@ -998,77 +1050,103 @@ export default function Home() {
 
         {displayedAccounts.length > 0 ? (
           <>
-            <div className="bg-white rounded-xl shadow-md overflow-hidden">
+            {/* Amountの意味説明（モバイル用） */}
+            <div className="mb-3 md:hidden bg-white rounded-lg shadow p-3">
+              <h3 className="text-sm font-medium text-gray-700 mb-2">
+                Amountの意味:
+              </h3>
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                <div className="flex items-center">
+                  <span className="w-3 h-3 rounded-full bg-gray-100 mr-2"></span>
+                  <span>-2: 削除済み</span>
+                </div>
+                <div className="flex items-center">
+                  <span className="w-3 h-3 rounded-full bg-yellow-100 mr-2"></span>
+                  <span>-1: 無視してよい</span>
+                </div>
+                <div className="flex items-center">
+                  <span className="w-3 h-3 rounded-full bg-blue-100 mr-2"></span>
+                  <span>0: 未チェック</span>
+                </div>
+                <div className="flex items-center">
+                  <span className="w-3 h-3 rounded-full bg-green-100 mr-2"></span>
+                  <span>1+: チェック済み</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-white rounded-lg md:rounded-xl shadow-md overflow-hidden">
               <div className="overflow-x-auto">
                 <table className="min-w-full divide-y divide-gray-200">
                   <thead className="bg-gray-100">
                     <tr>
                       <th
-                        className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-200 transition-colors group"
+                        className="px-3 md:px-6 py-2 md:py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-200 transition-colors group"
                         onClick={() => handleSort("key")}
                       >
                         <div className="flex items-center justify-between">
                           <span className="group-hover:text-blue-600">#</span>
-                          <span className="ml-2">{getSortIcon("key")}</span>
+                          <span className="ml-1">{getSortIcon("key")}</span>
                         </div>
                       </th>
                       <th
-                        className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-200 transition-colors group"
+                        className="px-3 md:px-6 py-2 md:py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-200 transition-colors group"
                         onClick={() => handleSort("accountName")}
                       >
                         <div className="flex items-center justify-between">
                           <span className="group-hover:text-blue-600">
-                            アカウント名
+                            アカウント
                           </span>
-                          <span className="ml-2">
+                          <span className="ml-1">
                             {getSortIcon("accountName")}
                           </span>
                         </div>
                       </th>
+                      {/* スマホではID列を非表示 */}
                       <th
-                        className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-200 transition-colors group"
+                        className="px-3 md:px-6 py-2 md:py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-200 transition-colors group hidden md:table-cell"
                         onClick={() => handleSort("accountId")}
                       >
                         <div className="flex items-center justify-between">
                           <span className="group-hover:text-blue-600">ID</span>
-                          <span className="ml-2">
+                          <span className="ml-1">
                             {getSortIcon("accountId")}
                           </span>
                         </div>
                       </th>
                       <th
-                        className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-200 transition-colors group"
+                        className="px-3 md:px-6 py-2 md:py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-200 transition-colors group"
                         onClick={() => handleSort("lastCheckedDate")}
                       >
                         <div className="flex items-center justify-between">
                           <span className="group-hover:text-blue-600">
-                            最終確認日
+                            最終確認
                           </span>
-                          <span className="ml-2">
+                          <span className="ml-1">
                             {getSortIcon("lastCheckedDate")}
                           </span>
                         </div>
                       </th>
                       <th
-                        className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-200 transition-colors group"
+                        className="px-3 md:px-6 py-2 md:py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-200 transition-colors group"
                         onClick={() => handleSort("amount")}
                       >
                         <div className="flex items-center justify-between">
                           <span className="group-hover:text-blue-600">
                             Amount
                           </span>
-                          <span className="ml-2">{getSortIcon("amount")}</span>
+                          <span className="ml-1">{getSortIcon("amount")}</span>
                         </div>
                       </th>
                       <th
-                        className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-200 transition-colors group"
+                        className="px-3 md:px-6 py-2 md:py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-200 transition-colors group"
                         onClick={() => handleSort("addedDate")}
                       >
                         <div className="flex items-center justify-between">
                           <span className="group-hover:text-blue-600">
                             追加日
                           </span>
-                          <span className="ml-2">
+                          <span className="ml-1">
                             {getSortIcon("addedDate")}
                           </span>
                         </div>
@@ -1081,51 +1159,68 @@ export default function Home() {
                         key={`${account.key}-${index}-${page}`}
                         className="hover:bg-gray-50 transition-colors"
                       >
-                        <td className="px-6 py-4 whitespace-nowrap">
-                          <div className="font-medium text-gray-900 font-mono">
+                        <td className="px-3 md:px-6 py-2 md:py-3 whitespace-nowrap">
+                          <div className="font-medium text-gray-900 font-mono text-sm">
                             {account.key}
                           </div>
                         </td>
-                        <td className="px-6 py-4 whitespace-nowrap">
-                          <button
-                            onClick={() => handleOpenLink(account)}
-                            className="font-medium text-blue-600 hover:text-blue-800 hover:underline transition-colors text-left"
-                            title="TikTokで開く"
-                          >
-                            {account.accountName}
-                          </button>
+                        <td className="px-3 md:px-6 py-2 md:py-3">
+                          <div>
+                            <button
+                              onClick={() => handleOpenLink(account)}
+                              className="font-medium text-blue-600 hover:text-blue-800 hover:underline transition-colors text-left text-sm"
+                              title="TikTokで開く"
+                            >
+                              {account.accountName}
+                            </button>
+                            {/* スマホのみ：アカウント名の下に小さくIDを表示 */}
+                            <div className="md:hidden mt-1">
+                              <div className="text-xs text-gray-500 font-mono truncate">
+                                {account.accountId}
+                              </div>
+                            </div>
+                          </div>
                         </td>
-                        <td className="px-6 py-4 whitespace-nowrap">
-                          <div className="text-gray-700 font-mono">
+                        {/* スマホではID列を非表示 */}
+                        <td className="px-3 md:px-6 py-2 md:py-3 whitespace-nowrap hidden md:table-cell">
+                          <div className="text-gray-700 font-mono text-sm">
                             {account.accountId}
                           </div>
                         </td>
                         <td
                           className={getDateCellStyle(account.lastCheckedDate)}
                         >
-                          <div className="text-gray-700">
+                          <div className="text-gray-700 text-sm">
                             {formatDate(account.lastCheckedDate)}
                           </div>
                         </td>
-                        <td className="px-6 py-4 whitespace-nowrap">
-                          <div className="flex items-center space-x-3">
+                        <td className="px-3 md:px-6 py-2 md:py-3 whitespace-nowrap">
+                          <div className="flex items-center space-x-1 md:space-x-3">
                             <button
                               onClick={() => updateAmount(account.key, -1)}
-                              className="w-8 h-8 flex items-center justify-center bg-red-100 text-red-600 rounded-full hover:bg-red-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                              className="w-6 h-6 md:w-8 md:h-8 flex items-center justify-center bg-red-100 text-red-600 rounded-full hover:bg-red-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                               aria-label="減らす"
-                              disabled={
-                                !account.amount || parseInt(account.amount) <= 0
-                              }
+                              disabled={parseInt(account.amount) <= -2}
                               title="減らす"
                             >
                               -
                             </button>
-                            <span className="font-semibold text-lg min-w-12 text-center text-gray-800">
-                              {account.amount || "0"}
-                            </span>
+                            <div className="relative group">
+                              <span
+                                className={`font-semibold text-sm md:text-lg min-w-8 md:min-w-12 text-center px-2 py-1 rounded ${getAmountStyle(
+                                  account.amount || "0"
+                                )}`}
+                              >
+                                {account.amount || "0"}
+                              </span>
+                              <div className="absolute z-10 invisible group-hover:visible bottom-full left-1/2 transform -translate-x-1/2 mb-2 px-2 py-1 bg-gray-800 text-white text-xs rounded whitespace-nowrap">
+                                {getAmountMeaning(account.amount || "0")}
+                                <div className="absolute top-full left-1/2 transform -translate-x-1/2 border-4 border-transparent border-t-gray-800"></div>
+                              </div>
+                            </div>
                             <button
                               onClick={() => updateAmount(account.key, 1)}
-                              className="w-8 h-8 flex items-center justify-center bg-green-100 text-green-600 rounded-full hover:bg-green-200 transition-colors"
+                              className="w-6 h-6 md:w-8 md:h-8 flex items-center justify-center bg-green-100 text-green-600 rounded-full hover:bg-green-200 transition-colors"
                               aria-label="増やす"
                               title="増やす"
                             >
@@ -1133,8 +1228,8 @@ export default function Home() {
                             </button>
                           </div>
                         </td>
-                        <td className="px-6 py-4 whitespace-nowrap">
-                          <div className="text-gray-500">
+                        <td className="px-3 md:px-6 py-2 md:py-3 whitespace-nowrap">
+                          <div className="text-gray-500 text-sm">
                             {formatDate(account.addedDate)}
                           </div>
                         </td>
@@ -1147,26 +1242,28 @@ export default function Home() {
 
             {/* 読み込み中の表示 */}
             {loadingMore && (
-              <div className="mt-6 text-center">
-                <div className="inline-flex items-center justify-center space-x-3">
-                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
-                  <div className="text-gray-600">次のデータを読み込み中...</div>
+              <div className="mt-4 md:mt-6 text-center">
+                <div className="inline-flex items-center justify-center space-x-2 md:space-x-3">
+                  <div className="animate-spin rounded-full h-6 w-6 md:h-8 md:w-8 border-b-2 border-blue-600"></div>
+                  <div className="text-sm md:text-base text-gray-600">
+                    読み込み中...
+                  </div>
                 </div>
               </div>
             )}
 
             {/* スクロール用のトリガー要素 */}
             {hasMore && !loadingMore && (
-              <div className="mt-6 space-y-4">
+              <div className="mt-4 md:mt-6 space-y-3 md:space-y-4">
                 <div
                   ref={loadMoreRef}
-                  className="h-20 flex items-center justify-center"
+                  className="h-12 md:h-20 flex items-center justify-center"
                 >
                   <div className="text-center">
-                    <div className="animate-bounce text-2xl text-blue-500">
+                    <div className="animate-bounce text-xl md:text-2xl text-blue-500">
                       ↓
                     </div>
-                    <p className="mt-2 text-sm text-gray-500">
+                    <p className="mt-1 md:mt-2 text-xs md:text-sm text-gray-500">
                       スクロールしてさらに読み込む
                     </p>
                   </div>
@@ -1174,9 +1271,9 @@ export default function Home() {
                 <div className="text-center">
                   <button
                     onClick={handleManualLoadMore}
-                    className="px-4 py-2 bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200 transition-colors text-sm"
+                    className="px-3 md:px-4 py-1 md:py-2 bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200 transition-colors text-xs md:text-sm"
                   >
-                    またはクリックして次の10件を読み込む
+                    クリックして次の10件を読み込む
                   </button>
                 </div>
               </div>
@@ -1184,10 +1281,10 @@ export default function Home() {
 
             {/* 全件表示完了のメッセージ */}
             {!hasMore && displayedAccounts.length > 0 && (
-              <div className="mt-6 text-center">
-                <div className="inline-flex items-center px-4 py-2 bg-green-50 text-green-700 rounded-full">
+              <div className="mt-4 md:mt-6 text-center">
+                <div className="inline-flex items-center px-3 md:px-4 py-1 md:py-2 bg-green-50 text-green-700 rounded-full">
                   <svg
-                    className="w-5 h-5 mr-2"
+                    className="w-4 h-4 md:w-5 md:h-5 mr-1 md:mr-2"
                     fill="currentColor"
                     viewBox="0 0 20 20"
                   >
@@ -1197,62 +1294,67 @@ export default function Home() {
                       clipRule="evenodd"
                     />
                   </svg>
-                  <span className="font-medium">
+                  <span className="text-sm md:text-base font-medium">
                     すべてのデータを表示しました
                   </span>
-                  <span className="ml-2 text-sm">
+                  <span className="ml-1 md:ml-2 text-xs md:text-sm">
                     （全{sortedAccounts.length}件）
                   </span>
                 </div>
               </div>
             )}
 
-            <div className="mt-8 text-sm text-gray-500 space-y-2">
-              <div className="flex items-center gap-2">
-                <div className="w-3 h-3 bg-yellow-400 rounded-full"></div>
-                <span>未確認</span>
-                <div className="w-3 h-3 bg-orange-400 rounded-full ml-4"></div>
-                <span>1週間以上前</span>
-                <div className="w-3 h-3 bg-red-400 rounded-full ml-4"></div>
-                <span>1ヶ月以上前</span>
+            <div className="mt-6 md:mt-8 text-xs md:text-sm text-gray-500 space-y-2">
+              <div className="hidden md:flex items-center gap-2">
+                <div className="flex items-center">
+                  <div className="w-3 h-3 bg-gray-100 rounded-full mr-2"></div>
+                  <span>-2: 削除済みアカウント</span>
+                </div>
+                <div className="flex items-center ml-4">
+                  <div className="w-3 h-3 bg-yellow-100 rounded-full mr-2"></div>
+                  <span>-1: 無視してよいアカウント</span>
+                </div>
+                <div className="flex items-center ml-4">
+                  <div className="w-3 h-3 bg-blue-100 rounded-full mr-2"></div>
+                  <span>0: 通常アカウント（未チェック）</span>
+                </div>
+                <div className="flex items-center ml-4">
+                  <div className="w-3 h-3 bg-green-100 rounded-full mr-2"></div>
+                  <span>1+: チェック済み</span>
+                </div>
               </div>
-              <p>※ アカウント名をクリックするとTikTokのページが開きます</p>
-              <p>※ ヘッダーをクリックすると並び替えができます</p>
-              <p>
-                ※
-                TikTokリンクを開くと自動的に最終確認日が今日の日付に更新されます
-              </p>
-              <p>
-                ※
-                Amountはプラス/マイナスボタンで調整できます（0未満にはなりません）
-              </p>
-              <p>※ Amountボタンを押すと最終確認日も同時に更新されます</p>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-1 md:gap-2">
+                <p>※ アカウント名をクリックするとTikTokのページが開きます</p>
+                <p>※ ヘッダーをクリックすると並び替えができます</p>
+                <p>※ TikTokリンクを開くと最終確認日が更新されます</p>
+                <p>※ Amountボタンで-2から調整可能（ホバーで意味表示）</p>
+              </div>
             </div>
           </>
         ) : (
-          <div className="bg-white rounded-xl shadow-md p-8 text-center">
-            <div className="text-4xl mb-4">📱</div>
-            <p className="text-lg text-gray-600 mb-2">
+          <div className="bg-white rounded-lg md:rounded-xl shadow-md p-6 md:p-8 text-center">
+            <div className="text-3xl md:text-4xl mb-3 md:mb-4">📱</div>
+            <p className="text-base md:text-lg text-gray-600 mb-2">
               {searchQuery || dateFilter.enabled
                 ? "検索条件に一致するデータがありません"
                 : "データが見つかりませんでした"}
             </p>
-            <p className="text-sm text-gray-500 mb-6">
+            <p className="text-xs md:text-sm text-gray-500 mb-4 md:mb-6">
               {searchQuery || dateFilter.enabled
                 ? "検索条件を変更するか、フィルターをリセットしてください"
                 : "Firebaseにデータが存在するか確認してください"}
             </p>
-            <div className="space-x-4">
+            <div className="space-x-2 md:space-x-4">
               <button
                 onClick={fetchAllData}
-                className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium"
+                className="px-4 md:px-6 py-2 md:py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium text-sm md:text-base"
               >
                 データを読み込む
               </button>
               {(searchQuery || dateFilter.enabled) && (
                 <button
                   onClick={resetFilters}
-                  className="px-6 py-3 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors font-medium"
+                  className="px-4 md:px-6 py-2 md:py-3 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors font-medium text-sm md:text-base"
                 >
                   フィルターをリセット
                 </button>
@@ -1264,11 +1366,11 @@ export default function Home() {
 
       {/* アカウント追加モーダル */}
       {showAddModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-xl shadow-lg max-w-md w-full max-h-[90vh] overflow-y-auto">
-            <div className="p-6">
-              <div className="flex justify-between items-center mb-6">
-                <h3 className="text-xl font-bold text-gray-800">
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-3 md:p-4 z-50">
+          <div className="bg-white rounded-lg md:rounded-xl shadow-lg max-w-md w-full max-h-[90vh] overflow-y-auto">
+            <div className="p-4 md:p-6">
+              <div className="flex justify-between items-center mb-4 md:mb-6">
+                <h3 className="text-lg md:text-xl font-bold text-gray-800">
                   アカウント追加
                 </h3>
                 <button
@@ -1276,7 +1378,7 @@ export default function Home() {
                   className="text-gray-400 hover:text-gray-600 transition-colors"
                 >
                   <svg
-                    className="w-6 h-6"
+                    className="w-5 h-5 md:w-6 md:h-6"
                     fill="none"
                     stroke="currentColor"
                     viewBox="0 0 24 24"
@@ -1291,9 +1393,9 @@ export default function Home() {
                 </button>
               </div>
 
-              <div className="space-y-4">
+              <div className="space-y-3 md:space-y-4">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                  <label className="block text-sm font-medium text-gray-700 mb-1 md:mb-2">
                     アカウント名 <span className="text-red-500">*</span>
                   </label>
                   <input
@@ -1306,12 +1408,12 @@ export default function Home() {
                       })
                     }
                     placeholder="例: かわいい猫ちゃん"
-                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    className="w-full px-3 md:px-4 py-1 md:py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                  <label className="block text-sm font-medium text-gray-700 mb-1 md:mb-2">
                     TikTok ID <span className="text-red-500">*</span>
                   </label>
                   <input
@@ -1324,7 +1426,7 @@ export default function Home() {
                       })
                     }
                     placeholder="例: cute_cat_123"
-                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    className="w-full px-3 md:px-4 py-1 md:py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
                   />
                   <p className="mt-1 text-xs text-gray-500">
                     TikTokのURL: https://www.tiktok.com/@
@@ -1333,27 +1435,28 @@ export default function Home() {
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                  <label className="block text-sm font-medium text-gray-700 mb-1 md:mb-2">
                     初期Amount
                   </label>
                   <input
                     type="number"
-                    min="0"
+                    min="-2"
+                    max="100"
                     value={newAccount.amount}
                     onChange={(e) =>
                       setNewAccount({ ...newAccount, amount: e.target.value })
                     }
-                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    className="w-full px-3 md:px-4 py-1 md:py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
                   />
                   <p className="mt-1 text-xs text-gray-500">
-                    追加時の初期値（デフォルト: 0）
+                    初期値（-2:削除済み, -1:無視してよい, 0:通常）
                   </p>
                 </div>
 
-                <div className="pt-4 border-t border-gray-200">
-                  <div className="text-sm text-gray-600 mb-4">
+                <div className="pt-3 md:pt-4 border-t border-gray-200">
+                  <div className="text-xs md:text-sm text-gray-600 mb-3 md:mb-4">
                     <p className="font-medium">追加される情報:</p>
-                    <ul className="mt-2 space-y-1">
+                    <ul className="mt-1 md:mt-2 space-y-1">
                       <li>• 最終確認日: 今日の日付</li>
                       <li>• 追加日: 今日の日付</li>
                       <li>• 自動的にID採番されます</li>
@@ -1361,10 +1464,10 @@ export default function Home() {
                   </div>
                 </div>
 
-                <div className="flex justify-end space-x-3 pt-4">
+                <div className="flex justify-end space-x-2 md:space-x-3 pt-3 md:pt-4">
                   <button
                     onClick={() => setShowAddModal(false)}
-                    className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
+                    className="px-3 md:px-4 py-1 md:py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors text-sm"
                     disabled={addingAccount}
                   >
                     キャンセル
@@ -1376,11 +1479,11 @@ export default function Home() {
                       !newAccount.accountName.trim() ||
                       !newAccount.accountId.trim()
                     }
-                    className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center"
+                    className="px-3 md:px-4 py-1 md:py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center text-sm"
                   >
                     {addingAccount ? (
                       <>
-                        <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                        <div className="animate-spin rounded-full h-3 w-3 md:h-4 md:w-4 border-b-2 border-white mr-1 md:mr-2"></div>
                         追加中...
                       </>
                     ) : (
@@ -1396,11 +1499,11 @@ export default function Home() {
 
       {/* 一括追加モーダル */}
       {showBulkAddModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-xl shadow-lg max-w-3xl w-full max-h-[90vh] overflow-y-auto">
-            <div className="p-6">
-              <div className="flex justify-between items-center mb-6">
-                <h3 className="text-xl font-bold text-gray-800">
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-3 md:p-4 z-50">
+          <div className="bg-white rounded-lg md:rounded-xl shadow-lg max-w-3xl w-full max-h-[90vh] overflow-y-auto">
+            <div className="p-4 md:p-6">
+              <div className="flex justify-between items-center mb-4 md:mb-6">
+                <h3 className="text-lg md:text-xl font-bold text-gray-800">
                   アカウント一括追加
                 </h3>
                 <button
@@ -1408,7 +1511,7 @@ export default function Home() {
                   className="text-gray-400 hover:text-gray-600 transition-colors"
                 >
                   <svg
-                    className="w-6 h-6"
+                    className="w-5 h-5 md:w-6 md:h-6"
                     fill="none"
                     stroke="currentColor"
                     viewBox="0 0 24 24"
@@ -1423,19 +1526,19 @@ export default function Home() {
                 </button>
               </div>
 
-              <div className="space-y-6">
+              <div className="space-y-4 md:space-y-6">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                  <label className="block text-sm font-medium text-gray-700 mb-1 md:mb-2">
                     TikTokのHTMLを貼り付けてください
                   </label>
                   <textarea
                     value={bulkHtml}
                     onChange={(e) => handleBulkHtmlChange(e.target.value)}
                     placeholder="TikTokのフォロー/フォロワーリストのHTMLをコピーして貼り付けてください"
-                    rows={8}
-                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 font-mono text-sm"
+                    rows={6}
+                    className="w-full px-3 md:px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 font-mono text-xs md:text-sm"
                   />
-                  <p className="mt-2 text-xs text-gray-500">
+                  <p className="mt-1 md:mt-2 text-xs text-gray-500">
                     TikTokのフォロー/フォロワーリストページで右クリック →
                     「ページのソースを表示」または開発者ツールからHTMLをコピーしてください
                   </p>
@@ -1444,11 +1547,11 @@ export default function Home() {
                 {/* プレビュー */}
                 {bulkPreview.length > 0 && (
                   <div>
-                    <div className="flex items-center justify-between mb-3">
-                      <h4 className="font-medium text-gray-700">
+                    <div className="flex items-center justify-between mb-2 md:mb-3">
+                      <h4 className="font-medium text-gray-700 text-sm md:text-base">
                         検出されたアカウント: {bulkPreview.length}件
                       </h4>
-                      <div className="text-sm text-gray-500">
+                      <div className="text-xs md:text-sm text-gray-500">
                         {bulkDuplicates.length > 0 && (
                           <span className="text-orange-600">
                             {bulkDuplicates.length}件の重複あり
@@ -1457,21 +1560,20 @@ export default function Home() {
                       </div>
                     </div>
 
-                    {/* 一括追加モーダル内のプレビューテーブル部分 */}
-                    <div className="bg-gray-50 rounded-lg border border-gray-200 max-h-60 overflow-y-auto">
+                    <div className="bg-gray-50 rounded-lg border border-gray-200 max-h-48 md:max-h-60 overflow-y-auto">
                       <table className="min-w-full divide-y divide-gray-200">
                         <thead className="bg-gray-100">
                           <tr>
-                            <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">
+                            <th className="px-2 md:px-4 py-1 md:py-2 text-left text-xs font-medium text-gray-500 uppercase">
                               キー
                             </th>
-                            <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">
+                            <th className="px-2 md:px-4 py-1 md:py-2 text-left text-xs font-medium text-gray-500 uppercase">
                               アカウント名
                             </th>
-                            <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">
+                            <th className="px-2 md:px-4 py-1 md:py-2 text-left text-xs font-medium text-gray-500 uppercase hidden md:table-cell">
                               ID
                             </th>
-                            <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">
+                            <th className="px-2 md:px-4 py-1 md:py-2 text-left text-xs font-medium text-gray-500 uppercase">
                               ステータス
                             </th>
                           </tr>
@@ -1491,24 +1593,27 @@ export default function Home() {
                                     : "hover:bg-gray-50"
                                 }
                               >
-                                <td className="px-4 py-2 text-sm">
+                                <td className="px-2 md:px-4 py-1 md:py-2 text-xs">
                                   <div className="font-mono font-medium text-gray-700 text-center">
                                     {account.previewKey}
                                   </div>
                                 </td>
-                                <td className="px-4 py-2 text-sm">
+                                <td className="px-2 md:px-4 py-1 md:py-2 text-xs">
                                   <div className="font-medium">
                                     {account.accountName || "（未設定）"}
                                   </div>
+                                  <div className="md:hidden text-xs text-gray-500 font-mono truncate">
+                                    {account.accountId}
+                                  </div>
                                 </td>
-                                <td className="px-4 py-2 text-sm font-mono">
+                                <td className="px-2 md:px-4 py-1 md:py-2 text-xs font-mono hidden md:table-cell">
                                   {account.accountId}
                                 </td>
-                                <td className="px-4 py-2 text-sm">
+                                <td className="px-2 md:px-4 py-1 md:py-2 text-xs">
                                   {isDuplicate ? (
-                                    <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-orange-100 text-orange-800">
+                                    <span className="inline-flex items-center px-1 md:px-2 py-0.5 md:py-1 rounded-full text-xs font-medium bg-orange-100 text-orange-800">
                                       <svg
-                                        className="w-3 h-3 mr-1"
+                                        className="w-2 h-2 md:w-3 md:h-3 mr-0.5 md:mr-1"
                                         fill="currentColor"
                                         viewBox="0 0 20 20"
                                       >
@@ -1521,9 +1626,9 @@ export default function Home() {
                                       重複
                                     </span>
                                   ) : (
-                                    <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                                    <span className="inline-flex items-center px-1 md:px-2 py-0.5 md:py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
                                       <svg
-                                        className="w-3 h-3 mr-1"
+                                        className="w-2 h-2 md:w-3 md:h-3 mr-0.5 md:mr-1"
                                         fill="currentColor"
                                         viewBox="0 0 20 20"
                                       >
@@ -1544,24 +1649,24 @@ export default function Home() {
                       </table>
                     </div>
 
-                    {/* 重複の詳細部分 */}
+                    {/* 重複の詳細 */}
                     {bulkDuplicates.length > 0 && (
-                      <div className="mt-3">
-                        <h5 className="text-sm font-medium text-orange-700 mb-2">
+                      <div className="mt-2 md:mt-3">
+                        <h5 className="text-xs md:text-sm font-medium text-orange-700 mb-1 md:mb-2">
                           重複アカウントの詳細:
                         </h5>
-                        <ul className="text-xs text-gray-600 space-y-1">
+                        <ul className="text-xs text-gray-600 space-y-0.5 md:space-y-1">
                           {bulkDuplicates.map((dup, index) => (
                             <li key={index} className="flex items-start">
-                              <span className="inline-block w-2 h-2 bg-orange-400 rounded-full mt-1 mr-2"></span>
+                              <span className="inline-block w-1.5 h-1.5 md:w-2 md:h-2 bg-orange-400 rounded-full mt-0.5 md:mt-1 mr-1 md:mr-2"></span>
                               <span>
-                                <span className="font-mono mr-1">
+                                <span className="font-mono mr-0.5 md:mr-1">
                                   #{dup.previewKey}:
                                 </span>
                                 <span className="font-medium">
                                   {dup.accountName}
                                 </span>
-                                <span className="font-mono mx-1">
+                                <span className="font-mono mx-0.5 md:mx-1">
                                   ({dup.accountId})
                                 </span>
                                 - {dup.reason}
@@ -1574,12 +1679,12 @@ export default function Home() {
                   </div>
                 )}
 
-                <div className="border-t border-gray-200 pt-4">
-                  <div className="text-sm text-gray-600 mb-4">
+                <div className="border-t border-gray-200 pt-3 md:pt-4">
+                  <div className="text-xs md:text-sm text-gray-600 mb-3 md:mb-4">
                     <p className="font-medium">
                       追加される情報（各アカウント）:
                     </p>
-                    <ul className="mt-2 space-y-1">
+                    <ul className="mt-1 md:mt-2 space-y-0.5 md:space-y-1">
                       <li>• 最終確認日: 今日の日付</li>
                       <li>• 追加日: 今日の日付</li>
                       <li>• Amount: 0（初期値）</li>
@@ -1589,10 +1694,10 @@ export default function Home() {
                   </div>
                 </div>
 
-                <div className="flex justify-end space-x-3 pt-4">
+                <div className="flex justify-end space-x-2 md:space-x-3 pt-3 md:pt-4">
                   <button
                     onClick={() => setShowBulkAddModal(false)}
-                    className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
+                    className="px-3 md:px-4 py-1 md:py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors text-sm"
                     disabled={bulkProcessing}
                   >
                     キャンセル
@@ -1600,17 +1705,17 @@ export default function Home() {
                   <button
                     onClick={handleBulkAddAccounts}
                     disabled={bulkProcessing || bulkPreview.length === 0}
-                    className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center"
+                    className="px-3 md:px-4 py-1 md:py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center text-sm"
                   >
                     {bulkProcessing ? (
                       <>
-                        <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                        <div className="animate-spin rounded-full h-3 w-3 md:h-4 md:w-4 border-b-2 border-white mr-1 md:mr-2"></div>
                         追加中...
                       </>
                     ) : (
                       <>
                         <svg
-                          className="w-4 h-4 mr-2"
+                          className="w-3 h-3 md:w-4 md:h-4 mr-1 md:mr-2"
                           fill="none"
                           stroke="currentColor"
                           viewBox="0 0 24 24"

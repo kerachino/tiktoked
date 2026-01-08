@@ -7,6 +7,19 @@ export interface TikTokAccount {
   addedDate: string;
 }
 
+export interface BulkPreviewAccount {
+  accountName: string;
+  accountId: string;
+  previewKey: string;
+}
+
+export interface BulkDuplicateAccount {
+  accountName: string;
+  accountId: string;
+  previewKey: string;
+  reason: string;
+}
+
 export type SortField =
   | "key"
   | "accountName"

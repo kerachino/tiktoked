@@ -3,7 +3,13 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { ref, get, update, set } from "firebase/database";
 import { db } from "@/lib/firebase";
-import { TikTokAccount, SortField, SortOrder } from "@/types/tiktok";
+import {
+  TikTokAccount,
+  SortField,
+  SortOrder,
+  BulkPreviewAccount,
+  BulkDuplicateAccount,
+} from "@/types/tiktok";
 
 // デバッグ用のログ
 const debugLog = (...args: any[]) => {
@@ -49,12 +55,10 @@ export default function Home() {
   const [showBulkAddModal, setShowBulkAddModal] = useState(false);
   const [bulkHtml, setBulkHtml] = useState("");
   const [bulkProcessing, setBulkProcessing] = useState(false);
-  const [bulkPreview, setBulkPreview] = useState<
-    Array<{ accountName: string; accountId: string }>
-  >([]);
-  const [bulkDuplicates, setBulkDuplicates] = useState<
-    Array<{ accountName: string; accountId: string; reason: string }>
-  >([]);
+  const [bulkPreview, setBulkPreview] = useState<BulkPreviewAccount[]>([]);
+  const [bulkDuplicates, setBulkDuplicates] = useState<BulkDuplicateAccount[]>(
+    []
+  );
 
   const observerRef = useRef<IntersectionObserver | null>(null);
   const loadMoreRef = useRef<HTMLDivElement>(null);
@@ -576,21 +580,34 @@ export default function Home() {
     return accounts;
   };
 
-  // 一括追加のHTMLを解析してプレビュー
+  // 一括アカウント追加処理
   const handleBulkHtmlChange = (html: string) => {
     setBulkHtml(html);
 
     if (html.trim()) {
       const accounts = parseBulkHtml(html);
-      setBulkPreview(accounts);
+
+      // 既存の全キーを取得して数値に変換
+      const existingKeys = allAccounts.map((acc) => parseInt(acc.key) || 0);
+      const maxKey = existingKeys.length > 0 ? Math.max(...existingKeys) : 0;
+
+      // プレビューにキー番号を追加（降順で振り分け）
+      // 例: 既存の最大キーが10で3件追加の場合 → 13, 12, 11
+      const previewWithKeys = accounts.map((account, index) => ({
+        ...account,
+        previewKey: (maxKey + accounts.length - index).toString(),
+      }));
+
+      setBulkPreview(previewWithKeys);
 
       // 重複チェック
       const duplicates: Array<{
         accountName: string;
         accountId: string;
+        previewKey: string;
         reason: string;
       }> = [];
-      accounts.forEach((account, index) => {
+      previewWithKeys.forEach((account, index) => {
         // 既存のアカウントと比較
         const existingAccount = allAccounts.find(
           (acc) => acc.accountId === account.accountId
@@ -604,7 +621,7 @@ export default function Home() {
         }
 
         // プレビュー内での重複チェック
-        const duplicateInPreview = accounts.find(
+        const duplicateInPreview = previewWithKeys.find(
           (acc, idx) => idx !== index && acc.accountId === account.accountId
         );
 
@@ -626,7 +643,7 @@ export default function Home() {
     }
   };
 
-  // 一括アカウント追加処理（修正箇所）
+  // 一括アカウント追加処理
   const handleBulkAddAccounts = async () => {
     if (!bulkHtml.trim()) {
       alert("HTMLを入力してください");
@@ -648,8 +665,6 @@ export default function Home() {
       // 既存のキーが存在する場合は最大値、なければ0から開始
       const maxKey = existingKeys.length > 0 ? Math.max(...existingKeys) : 0;
 
-      // 既存の最大値+1から開始（最下部から追加）
-      let nextKey = maxKey + 1;
       const today = new Date();
       const formattedDate = `${today.getFullYear()}/${(today.getMonth() + 1)
         .toString()
@@ -659,8 +674,10 @@ export default function Home() {
       let addedCount = 0;
       let skippedCount = 0;
 
-      // 重複を除いてアカウントを追加
-      for (const account of accounts) {
+      // 重複を除いてアカウントを追加（降順でキーを振り分け）
+      for (let i = 0; i < accounts.length; i++) {
+        const account = accounts[i];
+
         // 重複チェック
         const existingAccount = allAccounts.find(
           (acc) => acc.accountId === account.accountId
@@ -670,6 +687,9 @@ export default function Home() {
           skippedCount++;
           continue;
         }
+
+        // 降順でキーを振り分け（最大値 + 追加件数 - インデックス）
+        const newKey = maxKey + accounts.length - i;
 
         // 新しいアカウントデータ
         const accountData = {
@@ -681,12 +701,12 @@ export default function Home() {
         };
 
         // Firebaseに追加
-        const accountRef = ref(db, `__collections__/myfollow/${nextKey}`);
+        const accountRef = ref(db, `__collections__/myfollow/${newKey}`);
         await set(accountRef, accountData);
 
         // ローカル状態に追加
         newAccounts.push({
-          key: nextKey.toString(),
+          key: newKey.toString(),
           accountName: account.accountName,
           accountId: account.accountId,
           amount: "0",
@@ -694,7 +714,6 @@ export default function Home() {
           addedDate: formattedDate,
         });
 
-        nextKey++;
         addedCount++;
       }
 
@@ -1438,10 +1457,14 @@ export default function Home() {
                       </div>
                     </div>
 
+                    {/* 一括追加モーダル内のプレビューテーブル部分 */}
                     <div className="bg-gray-50 rounded-lg border border-gray-200 max-h-60 overflow-y-auto">
                       <table className="min-w-full divide-y divide-gray-200">
                         <thead className="bg-gray-100">
                           <tr>
+                            <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">
+                              キー
+                            </th>
                             <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">
                               アカウント名
                             </th>
@@ -1468,6 +1491,11 @@ export default function Home() {
                                     : "hover:bg-gray-50"
                                 }
                               >
+                                <td className="px-4 py-2 text-sm">
+                                  <div className="font-mono font-medium text-gray-700 text-center">
+                                    {account.previewKey}
+                                  </div>
+                                </td>
                                 <td className="px-4 py-2 text-sm">
                                   <div className="font-medium">
                                     {account.accountName || "（未設定）"}
@@ -1516,7 +1544,7 @@ export default function Home() {
                       </table>
                     </div>
 
-                    {/* 重複の詳細 */}
+                    {/* 重複の詳細部分 */}
                     {bulkDuplicates.length > 0 && (
                       <div className="mt-3">
                         <h5 className="text-sm font-medium text-orange-700 mb-2">
@@ -1527,6 +1555,9 @@ export default function Home() {
                             <li key={index} className="flex items-start">
                               <span className="inline-block w-2 h-2 bg-orange-400 rounded-full mt-1 mr-2"></span>
                               <span>
+                                <span className="font-mono mr-1">
+                                  #{dup.previewKey}:
+                                </span>
                                 <span className="font-medium">
                                   {dup.accountName}
                                 </span>

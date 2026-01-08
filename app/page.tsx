@@ -626,7 +626,7 @@ export default function Home() {
     }
   };
 
-  // 一括アカウント追加処理
+  // 一括アカウント追加処理（修正箇所）
   const handleBulkAddAccounts = async () => {
     if (!bulkHtml.trim()) {
       alert("HTMLを入力してください");
@@ -642,12 +642,13 @@ export default function Home() {
     try {
       setBulkProcessing(true);
 
-      // 既存の最大キーを取得
-      const maxKey = allAccounts.reduce((max, acc) => {
-        const keyNum = parseInt(acc.key) || 0;
-        return keyNum > max ? keyNum : max;
-      }, 0);
+      // 既存の全キーを取得して数値に変換
+      const existingKeys = allAccounts.map((acc) => parseInt(acc.key) || 0);
 
+      // 既存のキーが存在する場合は最大値、なければ0から開始
+      const maxKey = existingKeys.length > 0 ? Math.max(...existingKeys) : 0;
+
+      // 既存の最大値+1から開始（最下部から追加）
       let nextKey = maxKey + 1;
       const today = new Date();
       const formattedDate = `${today.getFullYear()}/${(today.getMonth() + 1)

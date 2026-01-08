@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback, useRef, useMemo } from "react";
-import { ref, get, update } from "firebase/database";
+import { ref, get, update, set } from "firebase/database";
 import { db } from "@/lib/firebase";
 import { TikTokAccount, SortField, SortOrder } from "@/types/tiktok";
 
@@ -24,6 +24,29 @@ export default function Home() {
   const [sortField, setSortField] = useState<SortField>("key");
   const [sortOrder, setSortOrder] = useState<SortOrder>("asc");
   const [page, setPage] = useState(1);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchType, setSearchType] = useState<"accountName" | "accountId">(
+    "accountName"
+  );
+  const [dateFilter, setDateFilter] = useState<{
+    startDate: string;
+    endDate: string;
+    enabled: boolean;
+  }>({
+    startDate: "",
+    endDate: "",
+    enabled: false,
+  });
+
+  // アカウント追加モーダル状態
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [newAccount, setNewAccount] = useState({
+    accountName: "",
+    accountId: "",
+    amount: "0",
+  });
+  const [addingAccount, setAddingAccount] = useState(false);
+
   const observerRef = useRef<IntersectionObserver | null>(null);
   const loadMoreRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -89,15 +112,69 @@ export default function Home() {
     }
   }, []);
 
-  // ソートされたアカウントを計算
-  const sortedAccounts = useMemo(() => {
+  // フィルタリングされたアカウントを計算
+  const filteredAccounts = useMemo(() => {
     if (allAccounts.length === 0) return [];
 
+    let filtered = [...allAccounts];
+
+    // 検索クエリでフィルタリング
+    if (searchQuery.trim() !== "") {
+      const query = searchQuery.toLowerCase().trim();
+      filtered = filtered.filter((account) => {
+        if (searchType === "accountName") {
+          return account.accountName.toLowerCase().includes(query);
+        } else {
+          return account.accountId.toLowerCase().includes(query);
+        }
+      });
+    }
+
+    // 日付範囲でフィルタリング
+    if (dateFilter.enabled && (dateFilter.startDate || dateFilter.endDate)) {
+      filtered = filtered.filter((account) => {
+        if (!account.addedDate || account.addedDate.trim() === "") return false;
+
+        try {
+          const accountDate = new Date(account.addedDate);
+          if (isNaN(accountDate.getTime())) return false;
+
+          const accountTime = accountDate.getTime();
+
+          if (dateFilter.startDate) {
+            const startDate = new Date(dateFilter.startDate);
+            startDate.setHours(0, 0, 0, 0);
+            if (accountTime < startDate.getTime()) return false;
+          }
+
+          if (dateFilter.endDate) {
+            const endDate = new Date(dateFilter.endDate);
+            endDate.setHours(23, 59, 59, 999);
+            if (accountTime > endDate.getTime()) return false;
+          }
+
+          return true;
+        } catch {
+          return false;
+        }
+      });
+    }
+
     debugLog(
-      `ソート処理開始: ${sortField} ${sortOrder}, ${allAccounts.length}件`
+      `フィルタリング完了: ${filtered.length}件（検索: "${searchQuery}", 日付絞り込み: ${dateFilter.enabled})`
+    );
+    return filtered;
+  }, [allAccounts, searchQuery, searchType, dateFilter]);
+
+  // ソートされたアカウントを計算
+  const sortedAccounts = useMemo(() => {
+    if (filteredAccounts.length === 0) return [];
+
+    debugLog(
+      `ソート処理開始: ${sortField} ${sortOrder}, ${filteredAccounts.length}件`
     );
 
-    const sorted = [...allAccounts].sort((a, b) => {
+    const sorted = [...filteredAccounts].sort((a, b) => {
       let valueA: any = a[sortField];
       let valueB: any = b[sortField];
 
@@ -138,7 +215,7 @@ export default function Home() {
 
     debugLog(`ソート処理完了: ${sorted.length}件`);
     return sorted;
-  }, [allAccounts, sortField, sortOrder]);
+  }, [filteredAccounts, sortField, sortOrder]);
 
   // 表示するアカウントを計算（ページネーション）
   const currentDisplayedAccounts = useMemo(() => {
@@ -204,6 +281,41 @@ export default function Home() {
       return "↕️";
     }
     return sortOrder === "asc" ? "↑" : "↓";
+  };
+
+  // 検索処理
+  const handleSearch = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value;
+    setSearchQuery(value);
+    setPage(1); // 検索時は1ページ目に戻る
+  }, []);
+
+  // 検索タイプ切り替え
+  const handleSearchTypeChange = (type: "accountName" | "accountId") => {
+    setSearchType(type);
+    setPage(1); // 切り替え時は1ページ目に戻る
+  };
+
+  // 日付フィルター変更
+  const handleDateFilterChange = (
+    field: "startDate" | "endDate" | "enabled",
+    value: any
+  ) => {
+    setDateFilter((prev) => ({
+      ...prev,
+      [field]: value,
+    }));
+    setPage(1); // フィルター変更時は1ページ目に戻る
+  };
+
+  // 日付フィルターリセット
+  const resetDateFilter = () => {
+    setDateFilter({
+      startDate: "",
+      endDate: "",
+      enabled: false,
+    });
+    setPage(1);
   };
 
   // 無限スクロールの設定 - IntersectionObserverの初期化
@@ -279,7 +391,7 @@ export default function Home() {
         LastCheckedDate: formattedDate,
       });
 
-      // ローカル状態を更新
+      // ローカル状態を即時更新
       setAllAccounts((prevAccounts) =>
         prevAccounts.map((acc) =>
           acc.key === account.key
@@ -297,7 +409,7 @@ export default function Home() {
     }
   };
 
-  // Amountを増減
+  // Amountを増減（最終確認日も更新）
   const updateAmount = async (accountKey: string, delta: number) => {
     try {
       const account = allAccounts.find((acc) => acc.key === accountKey);
@@ -308,25 +420,103 @@ export default function Home() {
         account.amount && account.amount !== "" ? parseInt(account.amount) : 0;
       const newAmount = Math.max(0, currentAmount + delta);
 
+      // 今日の日付をYYYY/MM/DD形式で取得
+      const today = new Date();
+      const formattedDate = `${today.getFullYear()}/${(today.getMonth() + 1)
+        .toString()
+        .padStart(2, "0")}/${today.getDate().toString().padStart(2, "0")}`;
+
       const accountRef = ref(db, `__collections__/myfollow/${accountKey}`);
 
+      // Amountと最終確認日を同時に更新
       await update(accountRef, {
         Amount: newAmount.toString(),
+        LastCheckedDate: formattedDate,
       });
 
-      // ローカル状態を更新
+      // ローカル状態を即時更新
       setAllAccounts((prevAccounts) =>
         prevAccounts.map((acc) =>
           acc.key === accountKey
-            ? { ...acc, amount: newAmount.toString() }
+            ? {
+                ...acc,
+                amount: newAmount.toString(),
+                lastCheckedDate: formattedDate,
+              }
             : acc
         )
       );
 
-      debugLog(`Amountを更新しました: ${newAmount}`);
+      debugLog(`Amountを更新しました: ${newAmount}, 最終確認日も更新`);
     } catch (error) {
       console.error("Amount更新エラー:", error);
       alert("Amountの更新に失敗しました。");
+    }
+  };
+
+  // アカウント追加処理
+  const handleAddAccount = async () => {
+    if (!newAccount.accountName.trim() || !newAccount.accountId.trim()) {
+      alert("アカウント名とIDは必須です");
+      return;
+    }
+
+    try {
+      setAddingAccount(true);
+
+      // 新しいキーを生成（既存の最大キー + 1）
+      const maxKey = allAccounts.reduce((max, acc) => {
+        const keyNum = parseInt(acc.key) || 0;
+        return keyNum > max ? keyNum : max;
+      }, 0);
+
+      const newKey = (maxKey + 1).toString();
+
+      // 今日の日付をYYYY/MM/DD形式で取得
+      const today = new Date();
+      const formattedDate = `${today.getFullYear()}/${(today.getMonth() + 1)
+        .toString()
+        .padStart(2, "0")}/${today.getDate().toString().padStart(2, "0")}`;
+
+      // 新しいアカウントデータ
+      const accountData = {
+        AccountName: newAccount.accountName.trim(),
+        AccountID: newAccount.accountId.trim(),
+        Amount: newAccount.amount || "0",
+        LastCheckedDate: formattedDate,
+        AddedDate: formattedDate,
+      };
+
+      // Firebaseに追加
+      const accountRef = ref(db, `__collections__/myfollow/${newKey}`);
+      await set(accountRef, accountData);
+
+      // ローカル状態に追加
+      const newAccountObj: TikTokAccount = {
+        key: newKey,
+        accountName: newAccount.accountName.trim(),
+        accountId: newAccount.accountId.trim(),
+        amount: newAccount.amount || "0",
+        lastCheckedDate: formattedDate,
+        addedDate: formattedDate,
+      };
+
+      setAllAccounts((prev) => [...prev, newAccountObj]);
+
+      // モーダルを閉じてフォームをリセット
+      setShowAddModal(false);
+      setNewAccount({
+        accountName: "",
+        accountId: "",
+        amount: "0",
+      });
+
+      alert("アカウントを追加しました");
+    } catch (error) {
+      console.error("アカウント追加エラー:", error);
+      alert("アカウントの追加に失敗しました。");
+    } finally {
+      setAddingAccount(false);
     }
   };
 
@@ -374,6 +564,13 @@ export default function Home() {
     return "px-6 py-4 whitespace-nowrap";
   };
 
+  // 検索とフィルターのリセット
+  const resetFilters = () => {
+    setSearchQuery("");
+    resetDateFilter();
+    setPage(1);
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -414,6 +611,25 @@ export default function Home() {
             >
               データ更新
             </button>
+            <button
+              onClick={() => setShowAddModal(true)}
+              className="text-sm bg-blue-600 text-white px-3 py-1 rounded-full hover:bg-blue-700 transition-colors flex items-center"
+            >
+              <svg
+                className="w-4 h-4 mr-1"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M12 4v16m8-8H4"
+                />
+              </svg>
+              アカウント追加
+            </button>
           </div>
 
           {error && (
@@ -429,12 +645,118 @@ export default function Home() {
           )}
         </header>
 
-        {displayedAccounts.length > 0 ? (
-          <>
-            <div className="mb-4 text-sm text-gray-500">
-              <p>※ ヘッダーをクリックすると並び替えができます</p>
+        {/* 検索とフィルターセクション */}
+        <div className="mb-6 bg-white rounded-xl shadow-md p-4 md:p-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {/* 検索バー */}
+            <div className="space-y-2">
+              <label className="block text-sm font-medium text-gray-700">
+                検索
+              </label>
+              <div className="flex space-x-2">
+                <div className="flex border rounded-lg overflow-hidden">
+                  <button
+                    onClick={() => handleSearchTypeChange("accountName")}
+                    className={`px-3 py-2 text-sm ${
+                      searchType === "accountName"
+                        ? "bg-blue-600 text-white"
+                        : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+                    }`}
+                  >
+                    アカウント名
+                  </button>
+                  <button
+                    onClick={() => handleSearchTypeChange("accountId")}
+                    className={`px-3 py-2 text-sm ${
+                      searchType === "accountId"
+                        ? "bg-blue-600 text-white"
+                        : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+                    }`}
+                  >
+                    ID
+                  </button>
+                </div>
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={handleSearch}
+                  placeholder={`${
+                    searchType === "accountName" ? "アカウント名" : "ID"
+                  }で検索...`}
+                  className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                />
+              </div>
             </div>
 
+            {/* 日付フィルター */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="block text-sm font-medium text-gray-700">
+                  追加日で絞り込み
+                </label>
+                <div className="flex items-center">
+                  <input
+                    type="checkbox"
+                    checked={dateFilter.enabled}
+                    onChange={(e) =>
+                      handleDateFilterChange("enabled", e.target.checked)
+                    }
+                    className="h-4 w-4 text-blue-600 rounded"
+                  />
+                  <span className="ml-2 text-sm text-gray-600">有効</span>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">
+                    開始日
+                  </label>
+                  <input
+                    type="date"
+                    value={dateFilter.startDate}
+                    onChange={(e) =>
+                      handleDateFilterChange("startDate", e.target.value)
+                    }
+                    disabled={!dateFilter.enabled}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100 disabled:text-gray-400"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">
+                    終了日
+                  </label>
+                  <input
+                    type="date"
+                    value={dateFilter.endDate}
+                    onChange={(e) =>
+                      handleDateFilterChange("endDate", e.target.value)
+                    }
+                    disabled={!dateFilter.enabled}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100 disabled:text-gray-400"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* アクションボタン */}
+            <div className="flex items-end space-x-2">
+              <button
+                onClick={resetFilters}
+                className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors text-sm"
+              >
+                フィルターをリセット
+              </button>
+              {(searchQuery || dateFilter.enabled) && (
+                <div className="text-sm text-gray-600">
+                  {sortedAccounts.length}件が見つかりました
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {displayedAccounts.length > 0 ? (
+          <>
             <div className="bg-white rounded-xl shadow-md overflow-hidden">
               <div className="overflow-x-auto">
                 <table className="min-w-full divide-y divide-gray-200">
@@ -510,9 +832,6 @@ export default function Home() {
                           </span>
                         </div>
                       </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        アクション
-                      </th>
                     </tr>
                   </thead>
                   <tbody className="bg-white divide-y divide-gray-200">
@@ -527,9 +846,13 @@ export default function Home() {
                           </div>
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap">
-                          <div className="font-medium text-gray-900">
+                          <button
+                            onClick={() => handleOpenLink(account)}
+                            className="font-medium text-blue-600 hover:text-blue-800 hover:underline transition-colors text-left"
+                            title="TikTokで開く"
+                          >
                             {account.accountName}
-                          </div>
+                          </button>
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap">
                           <div className="text-gray-700 font-mono">
@@ -573,22 +896,6 @@ export default function Home() {
                           <div className="text-gray-500">
                             {formatDate(account.addedDate)}
                           </div>
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap">
-                          <button
-                            onClick={() => handleOpenLink(account)}
-                            className="px-4 py-2 bg-gradient from-blue-600 to-purple-600 text-white rounded-lg hover:from-blue-700 hover:to-purple-700 transition-all duration-300 flex items-center space-x-2 shadow-sm hover:shadow-md"
-                            title="TikTokで開く"
-                          >
-                            <svg
-                              className="w-4 h-4"
-                              fill="currentColor"
-                              viewBox="0 0 24 24"
-                            >
-                              <path d="M12.52 3.02C13.16 2.39 14.21 2.39 14.85 3.02L16.87 5.04C17.24 5.41 17.87 5.41 18.24 5.04L20.66 2.62C21.25 2.03 22.2 2.03 22.79 2.62L23.38 3.21C23.97 3.8 23.97 4.75 23.38 5.34L20.96 7.76C20.59 8.13 20.59 8.76 20.96 9.13L22.98 11.15C23.61 11.79 23.61 12.84 22.98 13.48L13.48 22.98C12.84 23.61 11.79 23.61 11.15 22.98L9.13 20.96C8.76 20.59 8.13 20.59 7.76 20.96L5.34 23.38C4.75 23.97 3.8 23.97 3.21 23.38L2.62 22.79C2.03 22.2 2.03 21.25 2.62 20.66L5.04 18.24C5.41 17.87 5.41 17.24 5.04 16.87L3.02 14.85C2.39 14.21 2.39 13.16 3.02 12.52L12.52 3.02Z" />
-                            </svg>
-                            <span>開く</span>
-                          </button>
                         </td>
                       </tr>
                     ))}
@@ -668,6 +975,7 @@ export default function Home() {
                 <div className="w-3 h-3 bg-red-400 rounded-full ml-4"></div>
                 <span>1ヶ月以上前</span>
               </div>
+              <p>※ アカウント名をクリックするとTikTokのページが開きます</p>
               <p>※ ヘッダーをクリックすると並び替えができます</p>
               <p>
                 ※
@@ -677,30 +985,173 @@ export default function Home() {
                 ※
                 Amountはプラス/マイナスボタンで調整できます（0未満にはなりません）
               </p>
-              <p className="mt-3 font-medium">
-                データパス: __collections__/myfollow • ページサイズ: {PAGE_SIZE}
-                件
-              </p>
+              <p>※ Amountボタンを押すと最終確認日も同時に更新されます</p>
             </div>
           </>
         ) : (
           <div className="bg-white rounded-xl shadow-md p-8 text-center">
             <div className="text-4xl mb-4">📱</div>
             <p className="text-lg text-gray-600 mb-2">
-              データが見つかりませんでした
+              {searchQuery || dateFilter.enabled
+                ? "検索条件に一致するデータがありません"
+                : "データが見つかりませんでした"}
             </p>
             <p className="text-sm text-gray-500 mb-6">
-              Firebaseにデータが存在するか確認してください
+              {searchQuery || dateFilter.enabled
+                ? "検索条件を変更するか、フィルターをリセットしてください"
+                : "Firebaseにデータが存在するか確認してください"}
             </p>
-            <button
-              onClick={fetchAllData}
-              className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium"
-            >
-              データを読み込む
-            </button>
+            <div className="space-x-4">
+              <button
+                onClick={fetchAllData}
+                className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium"
+              >
+                データを読み込む
+              </button>
+              {(searchQuery || dateFilter.enabled) && (
+                <button
+                  onClick={resetFilters}
+                  className="px-6 py-3 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors font-medium"
+                >
+                  フィルターをリセット
+                </button>
+              )}
+            </div>
           </div>
         )}
       </div>
+
+      {/* アカウント追加モーダル */}
+      {showAddModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-xl shadow-lg max-w-md w-full max-h-[90vh] overflow-y-auto">
+            <div className="p-6">
+              <div className="flex justify-between items-center mb-6">
+                <h3 className="text-xl font-bold text-gray-800">
+                  アカウント追加
+                </h3>
+                <button
+                  onClick={() => setShowAddModal(false)}
+                  className="text-gray-400 hover:text-gray-600 transition-colors"
+                >
+                  <svg
+                    className="w-6 h-6"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M6 18L18 6M6 6l12 12"
+                    />
+                  </svg>
+                </button>
+              </div>
+
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    アカウント名 <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={newAccount.accountName}
+                    onChange={(e) =>
+                      setNewAccount({
+                        ...newAccount,
+                        accountName: e.target.value,
+                      })
+                    }
+                    placeholder="例: かわいい猫ちゃん"
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    TikTok ID <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={newAccount.accountId}
+                    onChange={(e) =>
+                      setNewAccount({
+                        ...newAccount,
+                        accountId: e.target.value,
+                      })
+                    }
+                    placeholder="例: cute_cat_123"
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  />
+                  <p className="mt-1 text-xs text-gray-500">
+                    TikTokのURL: https://www.tiktok.com/@
+                    <span className="font-semibold">ここに入力したID</span>
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    初期Amount
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    value={newAccount.amount}
+                    onChange={(e) =>
+                      setNewAccount({ ...newAccount, amount: e.target.value })
+                    }
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  />
+                  <p className="mt-1 text-xs text-gray-500">
+                    追加時の初期値（デフォルト: 0）
+                  </p>
+                </div>
+
+                <div className="pt-4 border-t border-gray-200">
+                  <div className="text-sm text-gray-600 mb-4">
+                    <p className="font-medium">追加される情報:</p>
+                    <ul className="mt-2 space-y-1">
+                      <li>• 最終確認日: 今日の日付</li>
+                      <li>• 追加日: 今日の日付</li>
+                      <li>• 自動的にID採番されます</li>
+                    </ul>
+                  </div>
+                </div>
+
+                <div className="flex justify-end space-x-3 pt-4">
+                  <button
+                    onClick={() => setShowAddModal(false)}
+                    className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
+                    disabled={addingAccount}
+                  >
+                    キャンセル
+                  </button>
+                  <button
+                    onClick={handleAddAccount}
+                    disabled={
+                      addingAccount ||
+                      !newAccount.accountName.trim() ||
+                      !newAccount.accountId.trim()
+                    }
+                    className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center"
+                  >
+                    {addingAccount ? (
+                      <>
+                        <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                        追加中...
+                      </>
+                    ) : (
+                      "アカウントを追加"
+                    )}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

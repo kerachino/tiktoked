@@ -4,7 +4,8 @@ import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { ref, get, update, set } from "firebase/database";
 import { db } from "@/lib/firebase";
 import { TikTokAccount, SortField, SortOrder } from "@/types/tiktok";
-import AccountTable from "@/components/AccountTable";
+import AddAccountModal from "@/components/AddAccountModal";
+import BulkAddModal from "@/components/BulkAddModal";
 
 // デバッグ用のログ関数
 const debugLog = (...args: any[]) => {
@@ -25,6 +26,8 @@ const AMOUNT_MEANINGS = {
 
 export default function Home() {
   const [allAccounts, setAllAccounts] = useState<TikTokAccount[]>([]);
+  const [filteredAccounts, setFilteredAccounts] = useState<TikTokAccount[]>([]);
+  const [sortedAccounts, setSortedAccounts] = useState<TikTokAccount[]>([]);
   const [displayedAccounts, setDisplayedAccounts] = useState<TikTokAccount[]>(
     []
   );
@@ -61,6 +64,16 @@ export default function Home() {
     favorite: false,
   });
   const [addingAccount, setAddingAccount] = useState(false);
+
+  // 一括アカウント追加時のハンドラー
+  const handleAccountsAdded = useCallback((newAccounts: TikTokAccount[]) => {
+    setAllAccounts((prev) => [...prev, ...newAccounts]);
+  }, []);
+
+  // アカウント追加時のハンドラー
+  const handleAccountAdded = useCallback((newAccount: TikTokAccount) => {
+    setAllAccounts((prev) => [...prev, newAccount]);
+  }, []);
 
   // 一括追加モーダル状態
   const [showBulkAddModal, setShowBulkAddModal] = useState(false);
@@ -145,8 +158,11 @@ export default function Home() {
   }, []);
 
   // フィルタリングされたアカウントを計算
-  const filteredAccounts = useMemo(() => {
-    if (allAccounts.length === 0) return [];
+  useEffect(() => {
+    if (allAccounts.length === 0) {
+      setFilteredAccounts([]);
+      return;
+    }
 
     let filtered = [...allAccounts];
 
@@ -200,12 +216,15 @@ export default function Home() {
     debugLog(
       `フィルタリング完了: ${filtered.length}件（検索: "${searchQuery}", 日付絞り込み: ${dateFilter.enabled}, お気に入りのみ: ${showFavoritesOnly})`
     );
-    return filtered;
+    setFilteredAccounts(filtered);
   }, [allAccounts, searchQuery, searchType, dateFilter, showFavoritesOnly]);
 
-  // ソートされたアカウントを計算
-  const sortedAccounts = useMemo(() => {
-    if (filteredAccounts.length === 0) return [];
+  // ソートされたアカウントを計算（並び替え条件が変更された時のみ）
+  useEffect(() => {
+    if (filteredAccounts.length === 0) {
+      setSortedAccounts([]);
+      return;
+    }
 
     debugLog(
       `ソート処理開始: ${sortField} ${sortOrder}, ${filteredAccounts.length}件`
@@ -261,12 +280,15 @@ export default function Home() {
     });
 
     debugLog(`ソート処理完了: ${sorted.length}件`);
-    return sorted;
+    setSortedAccounts(sorted);
   }, [filteredAccounts, sortField, sortOrder]);
 
   // 表示するアカウントを計算（ページネーション）
-  const currentDisplayedAccounts = useMemo(() => {
-    if (sortedAccounts.length === 0) return [];
+  useEffect(() => {
+    if (sortedAccounts.length === 0) {
+      setDisplayedAccounts([]);
+      return;
+    }
 
     const endIndex = page * PAGE_SIZE;
     const displayed = sortedAccounts.slice(0, endIndex);
@@ -281,7 +303,7 @@ export default function Home() {
       setHasMore(hasMoreItems);
     }
 
-    return displayed;
+    setDisplayedAccounts(displayed);
   }, [sortedAccounts, page, hasMore]);
 
   // 次のページを読み込む
@@ -375,7 +397,7 @@ export default function Home() {
         Favorite: newFavorite,
       });
 
-      // ローカル状態を即時更新
+      // ローカル状態を即時更新（並び替えを維持）
       setAllAccounts((prevAccounts) =>
         prevAccounts.map((acc) =>
           acc.key === accountKey ? { ...acc, favorite: newFavorite } : acc
@@ -467,12 +489,6 @@ export default function Home() {
     fetchAllData();
   }, [fetchAllData]);
 
-  // ソートやページ変更時に表示データを更新
-  useEffect(() => {
-    debugLog(`表示データ更新: ${currentDisplayedAccounts.length}件`);
-    setDisplayedAccounts(currentDisplayedAccounts);
-  }, [currentDisplayedAccounts]);
-
   // 手動で次のページを読み込むボタンのハンドラー
   const handleManualLoadMore = () => {
     debugLog(`手動で次のページを読み込み`);
@@ -497,7 +513,7 @@ export default function Home() {
         LastCheckedDate: formattedDate,
       });
 
-      // ローカル状態を即時更新
+      // ローカル状態を即時更新（並び替えを維持）
       setAllAccounts((prevAccounts) =>
         prevAccounts.map((acc) =>
           acc.key === account.key
@@ -542,7 +558,7 @@ export default function Home() {
         LastCheckedDate: formattedDate,
       });
 
-      // ローカル状態を即時更新
+      // ローカル状態を即時更新（並び替えを維持）
       setAllAccounts((prevAccounts) =>
         prevAccounts.map((acc) =>
           acc.key === accountKey
@@ -918,6 +934,7 @@ export default function Home() {
             <p className="text-sm md:text-base text-gray-600">
               全{sortedAccounts.length}件のアカウント（
               {displayedAccounts.length}件表示中）
+              {hasMore && `（さらに読み込み可能）`}
             </p>
             <div className="text-xs md:text-sm bg-blue-100 text-blue-800 px-2 md:px-3 py-1 rounded-full">
               ソート: {getSortFieldName(sortField)} (
@@ -1143,427 +1160,366 @@ export default function Home() {
           </div>
         </div>
 
-        {/* AccountTableコンポーネントを使用 */}
-        <AccountTable
-          accounts={displayedAccounts}
-          loadingMore={loadingMore}
-          hasMore={hasMore}
-          sortField={sortField}
-          sortOrder={sortOrder}
-          onSort={handleSort}
-          onOpenLink={handleOpenLink}
-          onUpdateAmount={updateAmount}
-          onToggleFavorite={toggleFavorite}
-          getAmountMeaning={getAmountMeaning}
-          getAmountStyle={getAmountStyle}
-          formatDate={formatDate}
-          getDateCellStyle={getDateCellStyle}
-          getSortIcon={getSortIcon}
-          onManualLoadMore={handleManualLoadMore}
-          loadMoreRef={loadMoreRef}
-        />
+        {displayedAccounts.length > 0 ? (
+          <>
+            {/* Amountの意味説明（モバイル用） */}
+            <div className="mb-3 md:hidden bg-white rounded-lg shadow p-3">
+              <h3 className="text-sm font-medium text-gray-700 mb-2">
+                Amountの意味:
+              </h3>
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                <div className="flex items-center">
+                  <span className="w-3 h-3 rounded-full bg-gray-100 mr-2"></span>
+                  <span>-2: 削除済み</span>
+                </div>
+                <div className="flex items-center">
+                  <span className="w-3 h-3 rounded-full bg-yellow-100 mr-2"></span>
+                  <span>-1: 無視してよい</span>
+                </div>
+                <div className="flex items-center">
+                  <span className="w-3 h-3 rounded-full bg-blue-100 mr-2"></span>
+                  <span>0: 未チェック</span>
+                </div>
+                <div className="flex items-center">
+                  <span className="w-3 h-3 rounded-full bg-green-100 mr-2"></span>
+                  <span>1+: チェック済み</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-white rounded-lg md:rounded-xl shadow-md overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="min-w-full divide-y divide-gray-200">
+                  <thead className="bg-gray-100">
+                    <tr>
+                      <th
+                        className="px-3 md:px-6 py-2 md:py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-200 transition-colors group"
+                        onClick={() => handleSort("key")}
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="group-hover:text-blue-600">#</span>
+                          <span className="ml-1">{getSortIcon("key")}</span>
+                        </div>
+                      </th>
+                      <th
+                        className="px-3 md:px-6 py-2 md:py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-200 transition-colors group"
+                        onClick={() => handleSort("accountName")}
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="group-hover:text-blue-600">
+                            アカウント
+                          </span>
+                          <span className="ml-1">
+                            {getSortIcon("accountName")}
+                          </span>
+                        </div>
+                      </th>
+                      {/* スマホではID列を非表示 */}
+                      <th
+                        className="px-3 md:px-6 py-2 md:py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-200 transition-colors group hidden md:table-cell"
+                        onClick={() => handleSort("accountId")}
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="group-hover:text-blue-600">ID</span>
+                          <span className="ml-1">
+                            {getSortIcon("accountId")}
+                          </span>
+                        </div>
+                      </th>
+                      <th
+                        className="px-3 md:px-6 py-2 md:py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-200 transition-colors group"
+                        onClick={() => handleSort("lastCheckedDate")}
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="group-hover:text-blue-600">
+                            最終確認
+                          </span>
+                          <span className="ml-1">
+                            {getSortIcon("lastCheckedDate")}
+                          </span>
+                        </div>
+                      </th>
+                      <th
+                        className="px-3 md:px-6 py-2 md:py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-200 transition-colors group"
+                        onClick={() => handleSort("amount")}
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="group-hover:text-blue-600">
+                            Amount
+                          </span>
+                          <span className="ml-1">{getSortIcon("amount")}</span>
+                        </div>
+                      </th>
+                      <th
+                        className="px-3 md:px-6 py-2 md:py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-200 transition-colors group"
+                        onClick={() => handleSort("favorite")}
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="group-hover:text-blue-600">♡</span>
+                          <span className="ml-1">
+                            {getSortIcon("favorite")}
+                          </span>
+                        </div>
+                      </th>
+                      <th
+                        className="px-3 md:px-6 py-2 md:py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-200 transition-colors group"
+                        onClick={() => handleSort("addedDate")}
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="group-hover:text-blue-600">
+                            追加日
+                          </span>
+                          <span className="ml-1">
+                            {getSortIcon("addedDate")}
+                          </span>
+                        </div>
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className="bg-white divide-y divide-gray-200">
+                    {displayedAccounts.map((account, index) => (
+                      <tr
+                        key={`${account.key}-${index}-${page}`}
+                        className="hover:bg-gray-50 transition-colors"
+                      >
+                        <td className="px-3 md:px-6 py-2 md:py-3 whitespace-nowrap">
+                          <div className="font-medium text-gray-900 font-mono text-sm">
+                            {account.key}
+                          </div>
+                        </td>
+                        <td className="px-3 md:px-6 py-2 md:py-3">
+                          <div>
+                            <button
+                              onClick={() => handleOpenLink(account)}
+                              className="font-medium text-blue-600 hover:text-blue-800 hover:underline transition-colors text-left text-sm"
+                              title="TikTokで開く"
+                            >
+                              {account.accountName}
+                            </button>
+                            {/* スマホのみ：アカウント名の下に小さくIDを表示 */}
+                            <div className="md:hidden mt-1">
+                              <div className="text-xs text-gray-500 font-mono truncate">
+                                {account.accountId}
+                              </div>
+                            </div>
+                          </div>
+                        </td>
+                        {/* スマホではID列を非表示 */}
+                        <td className="px-3 md:px-6 py-2 md:py-3 whitespace-nowrap hidden md:table-cell">
+                          <div className="text-gray-700 font-mono text-sm">
+                            {account.accountId}
+                          </div>
+                        </td>
+                        <td
+                          className={getDateCellStyle(account.lastCheckedDate)}
+                        >
+                          <div className="text-gray-700 text-sm">
+                            {formatDate(account.lastCheckedDate)}
+                          </div>
+                        </td>
+                        <td className="px-3 md:px-6 py-2 md:py-3 whitespace-nowrap">
+                          <div className="flex items-center space-x-1 md:space-x-3">
+                            <button
+                              onClick={() => updateAmount(account.key, -1)}
+                              className="w-6 h-6 md:w-8 md:h-8 flex items-center justify-center bg-red-100 text-red-600 rounded-full hover:bg-red-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                              aria-label="減らす"
+                              disabled={parseInt(account.amount) <= -2}
+                              title="減らす"
+                            >
+                              -
+                            </button>
+                            <div className="relative group">
+                              <span
+                                className={`font-semibold text-sm md:text-lg min-w-8 md:min-w-12 text-center px-2 py-1 rounded ${getAmountStyle(
+                                  account.amount || "0"
+                                )}`}
+                              >
+                                {account.amount || "0"}
+                              </span>
+                              <div className="absolute z-10 invisible group-hover:visible bottom-full left-1/2 transform -translate-x-1/2 mb-2 px-2 py-1 bg-gray-800 text-white text-xs rounded whitespace-nowrap">
+                                {getAmountMeaning(account.amount || "0")}
+                                <div className="absolute top-full left-1/2 transform -translate-x-1/2 border-4 border-transparent border-t-gray-800"></div>
+                              </div>
+                            </div>
+                            <button
+                              onClick={() => updateAmount(account.key, 1)}
+                              className="w-6 h-6 md:w-8 md:h-8 flex items-center justify-center bg-green-100 text-green-600 rounded-full hover:bg-green-200 transition-colors"
+                              aria-label="増やす"
+                              title="増やす"
+                            >
+                              +
+                            </button>
+                          </div>
+                        </td>
+                        <td className="px-3 md:px-6 py-2 md:py-3 whitespace-nowrap">
+                          <button
+                            onClick={() => toggleFavorite(account.key)}
+                            className={`text-2xl transition-all hover:scale-110 ${
+                              account.favorite
+                                ? "text-red-500 hover:text-red-700"
+                                : "text-gray-300 hover:text-red-400"
+                            }`}
+                            title={
+                              account.favorite
+                                ? "お気に入りを解除"
+                                : "お気に入りに追加"
+                            }
+                          >
+                            {account.favorite ? "♥" : "♡"}
+                          </button>
+                        </td>
+                        <td className="px-3 md:px-6 py-2 md:py-3 whitespace-nowrap">
+                          <div className="text-gray-500 text-sm">
+                            {formatDate(account.addedDate)}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* 読み込み中の表示 */}
+            {loadingMore && (
+              <div className="mt-4 md:mt-6 text-center">
+                <div className="inline-flex items-center justify-center space-x-2 md:space-x-3">
+                  <div className="animate-spin rounded-full h-6 w-6 md:h-8 md:w-8 border-b-2 border-blue-600"></div>
+                  <div className="text-sm md:text-base text-gray-600">
+                    読み込み中...
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* スクロール用のトリガー要素 */}
+            {hasMore && !loadingMore && (
+              <div className="mt-4 md:mt-6 space-y-3 md:space-y-4">
+                <div
+                  ref={loadMoreRef}
+                  className="h-12 md:h-20 flex items-center justify-center"
+                >
+                  <div className="text-center">
+                    <div className="animate-bounce text-xl md:text-2xl text-blue-500">
+                      ↓
+                    </div>
+                    <p className="mt-1 md:mt-2 text-xs md:text-sm text-gray-500">
+                      スクロールしてさらに読み込む
+                    </p>
+                  </div>
+                </div>
+                <div className="text-center">
+                  <button
+                    onClick={handleManualLoadMore}
+                    className="px-3 md:px-4 py-1 md:py-2 bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200 transition-colors text-xs md:text-sm"
+                  >
+                    クリックして次の10件を読み込む
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* 全件表示完了のメッセージ */}
+            {!hasMore && displayedAccounts.length > 0 && (
+              <div className="mt-4 md:mt-6 text-center">
+                <div className="inline-flex items-center px-3 md:px-4 py-1 md:py-2 bg-green-50 text-green-700 rounded-full">
+                  <svg
+                    className="w-4 h-4 md:w-5 md:h-5 mr-1 md:mr-2"
+                    fill="currentColor"
+                    viewBox="0 0 20 20"
+                  >
+                    <path
+                      fillRule="evenodd"
+                      d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
+                      clipRule="evenodd"
+                    />
+                  </svg>
+                  <span className="text-sm md:text-base font-medium">
+                    すべてのデータを表示しました
+                  </span>
+                  <span className="ml-1 md:ml-2 text-xs md:text-sm">
+                    （全{sortedAccounts.length}件）
+                  </span>
+                </div>
+              </div>
+            )}
+
+            <div className="mt-6 md:mt-8 text-xs md:text-sm text-gray-500 space-y-2">
+              <div className="hidden md:flex items-center gap-2">
+                <div className="flex items-center">
+                  <div className="w-3 h-3 bg-gray-100 rounded-full mr-2"></div>
+                  <span>-2: 削除済みアカウント</span>
+                </div>
+                <div className="flex items-center ml-4">
+                  <div className="w-3 h-3 bg-yellow-100 rounded-full mr-2"></div>
+                  <span>-1: 無視してよいアカウント</span>
+                </div>
+                <div className="flex items-center ml-4">
+                  <div className="w-3 h-3 bg-blue-100 rounded-full mr-2"></div>
+                  <span>0: 通常アカウント（未チェック）</span>
+                </div>
+                <div className="flex items-center ml-4">
+                  <div className="w-3 h-3 bg-green-100 rounded-full mr-2"></div>
+                  <span>1+: チェック済み</span>
+                </div>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-1 md:gap-2">
+                <p>※ アカウント名をクリックするとTikTokのページが開きます</p>
+                <p>※ ヘッダーをクリックすると並び替えができます</p>
+                <p>※ TikTokリンクを開くと最終確認日が更新されます</p>
+                <p>※ Amountボタンで-2から調整可能（ホバーで意味表示）</p>
+                <p>※ ♡をクリックでお気に入りに追加/解除できます</p>
+              </div>
+            </div>
+          </>
+        ) : (
+          <div className="bg-white rounded-lg md:rounded-xl shadow-md p-6 md:p-8 text-center">
+            <div className="text-3xl md:text-4xl mb-3 md:mb-4">📱</div>
+            <p className="text-base md:text-lg text-gray-600 mb-2">
+              {searchQuery || dateFilter.enabled || showFavoritesOnly
+                ? "検索条件に一致するデータがありません"
+                : "データが見つかりませんでした"}
+            </p>
+            <p className="text-xs md:text-sm text-gray-500 mb-4 md:mb-6">
+              {searchQuery || dateFilter.enabled || showFavoritesOnly
+                ? "検索条件を変更するか、フィルターをリセットしてください"
+                : "Firebaseにデータが存在するか確認してください"}
+            </p>
+            <div className="space-x-2 md:space-x-4">
+              <button
+                onClick={fetchAllData}
+                className="px-4 md:px-6 py-2 md:py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium text-sm md:text-base"
+              >
+                データを読み込む
+              </button>
+              {(searchQuery || dateFilter.enabled || showFavoritesOnly) && (
+                <button
+                  onClick={resetFilters}
+                  className="px-4 md:px-6 py-2 md:py-3 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors font-medium text-sm md:text-base"
+                >
+                  フィルターをリセット
+                </button>
+              )}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* アカウント追加モーダル */}
-      {showAddModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-3 md:p-4 z-50">
-          <div className="bg-white rounded-lg md:rounded-xl shadow-lg max-w-md w-full max-h-[90vh] overflow-y-auto">
-            <div className="p-4 md:p-6">
-              <div className="flex justify-between items-center mb-4 md:mb-6">
-                <h3 className="text-lg md:text-xl font-bold text-gray-800">
-                  アカウント追加
-                </h3>
-                <button
-                  onClick={() => setShowAddModal(false)}
-                  className="text-gray-400 hover:text-gray-600 transition-colors"
-                >
-                  <svg
-                    className="w-5 h-5 md:w-6 md:h-6"
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M6 18L18 6M6 6l12 12"
-                    />
-                  </svg>
-                </button>
-              </div>
-
-              <div className="space-y-3 md:space-y-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1 md:mb-2">
-                    アカウント名 <span className="text-red-500">*</span>
-                  </label>
-                  <input
-                    type="text"
-                    value={newAccount.accountName}
-                    onChange={(e) =>
-                      setNewAccount({
-                        ...newAccount,
-                        accountName: e.target.value,
-                      })
-                    }
-                    placeholder="例: かわいい猫ちゃん"
-                    className="w-full px-3 md:px-4 py-1 md:py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1 md:mb-2">
-                    TikTok ID <span className="text-red-500">*</span>
-                  </label>
-                  <input
-                    type="text"
-                    value={newAccount.accountId}
-                    onChange={(e) =>
-                      setNewAccount({
-                        ...newAccount,
-                        accountId: e.target.value,
-                      })
-                    }
-                    placeholder="例: cute_cat_123"
-                    className="w-full px-3 md:px-4 py-1 md:py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
-                  />
-                  <p className="mt-1 text-xs text-gray-500">
-                    TikTokのURL: https://www.tiktok.com/@
-                    <span className="font-semibold">ここに入力したID</span>
-                  </p>
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1 md:mb-2">
-                    初期Amount
-                  </label>
-                  <input
-                    type="number"
-                    min="-2"
-                    max="100"
-                    value={newAccount.amount}
-                    onChange={(e) =>
-                      setNewAccount({ ...newAccount, amount: e.target.value })
-                    }
-                    className="w-full px-3 md:px-4 py-1 md:py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
-                  />
-                  <p className="mt-1 text-xs text-gray-500">
-                    初期値（-2:削除済み, -1:無視してよい, 0:通常）
-                  </p>
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1 md:mb-2">
-                    お気に入りに追加
-                  </label>
-                  <div className="flex items-center">
-                    <input
-                      type="checkbox"
-                      checked={newAccount.favorite}
-                      onChange={(e) =>
-                        setNewAccount({
-                          ...newAccount,
-                          favorite: e.target.checked,
-                        })
-                      }
-                      className="h-4 w-4 text-red-600 rounded focus:ring-red-500 border-gray-300"
-                    />
-                    <span className="ml-2 text-sm text-gray-700">
-                      追加時にお気に入りに登録する
-                    </span>
-                  </div>
-                </div>
-
-                <div className="pt-3 md:pt-4 border-t border-gray-200">
-                  <div className="text-xs md:text-sm text-gray-600 mb-3 md:mb-4">
-                    <p className="font-medium">追加される情報:</p>
-                    <ul className="mt-1 md:mt-2 space-y-1">
-                      <li>• 最終確認日: 今日の日付</li>
-                      <li>• 追加日: 今日の日付</li>
-                      <li>• 自動的にID採番されます</li>
-                    </ul>
-                  </div>
-                </div>
-
-                <div className="flex justify-end space-x-2 md:space-x-3 pt-3 md:pt-4">
-                  <button
-                    onClick={() => setShowAddModal(false)}
-                    className="px-3 md:px-4 py-1 md:py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors text-sm"
-                    disabled={addingAccount}
-                  >
-                    キャンセル
-                  </button>
-                  <button
-                    onClick={handleAddAccount}
-                    disabled={
-                      addingAccount ||
-                      !newAccount.accountName.trim() ||
-                      !newAccount.accountId.trim()
-                    }
-                    className="px-3 md:px-4 py-1 md:py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center text-sm"
-                  >
-                    {addingAccount ? (
-                      <>
-                        <div className="animate-spin rounded-full h-3 w-3 md:h-4 md:w-4 border-b-2 border-white mr-1 md:mr-2"></div>
-                        追加中...
-                      </>
-                    ) : (
-                      "アカウントを追加"
-                    )}
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+      <AddAccountModal
+        isOpen={showAddModal}
+        onClose={() => setShowAddModal(false)}
+        onAccountAdded={handleAccountAdded}
+        allAccounts={allAccounts}
+      />
 
       {/* 一括追加モーダル */}
-      {showBulkAddModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-3 md:p-4 z-50">
-          <div className="bg-white rounded-lg md:rounded-xl shadow-lg max-w-3xl w-full max-h-[90vh] overflow-y-auto">
-            <div className="p-4 md:p-6">
-              <div className="flex justify-between items-center mb-4 md:mb-6">
-                <h3 className="text-lg md:text-xl font-bold text-gray-800">
-                  アカウント一括追加
-                </h3>
-                <button
-                  onClick={() => setShowBulkAddModal(false)}
-                  className="text-gray-400 hover:text-gray-600 transition-colors"
-                >
-                  <svg
-                    className="w-5 h-5 md:w-6 md:h-6"
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M6 18L18 6M6 6l12 12"
-                    />
-                  </svg>
-                </button>
-              </div>
-
-              <div className="space-y-4 md:space-y-6">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1 md:mb-2">
-                    TikTokのHTMLを貼り付けてください
-                  </label>
-                  <textarea
-                    value={bulkHtml}
-                    onChange={(e) => handleBulkHtmlChange(e.target.value)}
-                    placeholder="TikTokのフォロー/フォロワーリストのHTMLをコピーして貼り付けてください"
-                    rows={6}
-                    className="w-full px-3 md:px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 font-mono text-xs md:text-sm"
-                  />
-                  <p className="mt-1 md:mt-2 text-xs text-gray-500">
-                    TikTokのフォロー/フォロワーリストページで右クリック →
-                    「ページのソースを表示」または開発者ツールからHTMLをコピーしてください
-                  </p>
-                </div>
-
-                {/* プレビュー */}
-                {bulkPreview.length > 0 && (
-                  <div>
-                    <div className="flex items-center justify-between mb-2 md:mb-3">
-                      <h4 className="font-medium text-gray-700 text-sm md:text-base">
-                        検出されたアカウント: {bulkPreview.length}件
-                      </h4>
-                      <div className="text-xs md:text-sm text-gray-500">
-                        {bulkDuplicates.length > 0 && (
-                          <span className="text-orange-600">
-                            {bulkDuplicates.length}件の重複あり
-                          </span>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="bg-gray-50 rounded-lg border border-gray-200 max-h-48 md:max-h-60 overflow-y-auto">
-                      <table className="min-w-full divide-y divide-gray-200">
-                        <thead className="bg-gray-100">
-                          <tr>
-                            <th className="px-2 md:px-4 py-1 md:py-2 text-left text-xs font-medium text-gray-500 uppercase">
-                              キー
-                            </th>
-                            <th className="px-2 md:px-4 py-1 md:py-2 text-left text-xs font-medium text-gray-500 uppercase">
-                              アカウント名
-                            </th>
-                            <th className="px-2 md:px-4 py-1 md:py-2 text-left text-xs font-medium text-gray-500 uppercase hidden md:table-cell">
-                              ID
-                            </th>
-                            <th className="px-2 md:px-4 py-1 md:py-2 text-left text-xs font-medium text-gray-500 uppercase">
-                              ステータス
-                            </th>
-                          </tr>
-                        </thead>
-                        <tbody className="bg-white divide-y divide-gray-200">
-                          {bulkPreview.map((account, index) => {
-                            const isDuplicate = bulkDuplicates.some(
-                              (d) => d.accountId === account.accountId
-                            );
-
-                            return (
-                              <tr
-                                key={index}
-                                className={
-                                  isDuplicate
-                                    ? "bg-orange-50"
-                                    : "hover:bg-gray-50"
-                                }
-                              >
-                                <td className="px-2 md:px-4 py-1 md:py-2 text-xs">
-                                  <div className="font-mono font-medium text-gray-700 text-center">
-                                    {account.previewKey}
-                                  </div>
-                                </td>
-                                <td className="px-2 md:px-4 py-1 md:py-2 text-xs">
-                                  <div className="font-medium">
-                                    {account.accountName || "（未設定）"}
-                                  </div>
-                                  <div className="md:hidden text-xs text-gray-500 font-mono truncate">
-                                    {account.accountId}
-                                  </div>
-                                </td>
-                                <td className="px-2 md:px-4 py-1 md:py-2 text-xs font-mono hidden md:table-cell">
-                                  {account.accountId}
-                                </td>
-                                <td className="px-2 md:px-4 py-1 md:py-2 text-xs">
-                                  {isDuplicate ? (
-                                    <span className="inline-flex items-center px-1 md:px-2 py-0.5 md:py-1 rounded-full text-xs font-medium bg-orange-100 text-orange-800">
-                                      <svg
-                                        className="w-2 h-2 md:w-3 md:h-3 mr-0.5 md:mr-1"
-                                        fill="currentColor"
-                                        viewBox="0 0 20 20"
-                                      >
-                                        <path
-                                          fillRule="evenodd"
-                                          d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z"
-                                          clipRule="evenodd"
-                                        />
-                                      </svg>
-                                      重複
-                                    </span>
-                                  ) : (
-                                    <span className="inline-flex items-center px-1 md:px-2 py-0.5 md:py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
-                                      <svg
-                                        className="w-2 h-2 md:w-3 md:h-3 mr-0.5 md:mr-1"
-                                        fill="currentColor"
-                                        viewBox="0 0 20 20"
-                                      >
-                                        <path
-                                          fillRule="evenodd"
-                                          d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
-                                          clipRule="evenodd"
-                                        />
-                                      </svg>
-                                      追加可能
-                                    </span>
-                                  )}
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-
-                    {/* 重複の詳細 */}
-                    {bulkDuplicates.length > 0 && (
-                      <div className="mt-2 md:mt-3">
-                        <h5 className="text-xs md:text-sm font-medium text-orange-700 mb-1 md:mb-2">
-                          重複アカウントの詳細:
-                        </h5>
-                        <ul className="text-xs text-gray-600 space-y-0.5 md:space-y-1">
-                          {bulkDuplicates.map((dup, index) => (
-                            <li key={index} className="flex items-start">
-                              <span className="inline-block w-1.5 h-1.5 md:w-2 md:h-2 bg-orange-400 rounded-full mt-0.5 md:mt-1 mr-1 md:mr-2"></span>
-                              <span>
-                                <span className="font-mono mr-0.5 md:mr-1">
-                                  #{dup.previewKey}:
-                                </span>
-                                <span className="font-medium">
-                                  {dup.accountName}
-                                </span>
-                                <span className="font-mono mx-0.5 md:mx-1">
-                                  ({dup.accountId})
-                                </span>
-                                - {dup.reason}
-                              </span>
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                <div className="border-t border-gray-200 pt-3 md:pt-4">
-                  <div className="text-xs md:text-sm text-gray-600 mb-3 md:mb-4">
-                    <p className="font-medium">
-                      追加される情報（各アカウント）:
-                    </p>
-                    <ul className="mt-1 md:mt-2 space-y-0.5 md:space-y-1">
-                      <li>• 最終確認日: 今日の日付</li>
-                      <li>• 追加日: 今日の日付</li>
-                      <li>• Amount: 0（初期値）</li>
-                      <li>• Favorite: false（初期値）</li>
-                      <li>• 重複するIDは自動的にスキップされます</li>
-                      <li>• 自動的に連番でIDが採番されます</li>
-                    </ul>
-                  </div>
-                </div>
-
-                <div className="flex justify-end space-x-2 md:space-x-3 pt-3 md:pt-4">
-                  <button
-                    onClick={() => setShowBulkAddModal(false)}
-                    className="px-3 md:px-4 py-1 md:py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors text-sm"
-                    disabled={bulkProcessing}
-                  >
-                    キャンセル
-                  </button>
-                  <button
-                    onClick={handleBulkAddAccounts}
-                    disabled={bulkProcessing || bulkPreview.length === 0}
-                    className="px-3 md:px-4 py-1 md:py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center text-sm"
-                  >
-                    {bulkProcessing ? (
-                      <>
-                        <div className="animate-spin rounded-full h-3 w-3 md:h-4 md:w-4 border-b-2 border-white mr-1 md:mr-2"></div>
-                        追加中...
-                      </>
-                    ) : (
-                      <>
-                        <svg
-                          className="w-3 h-3 md:w-4 md:h-4 mr-1 md:mr-2"
-                          fill="none"
-                          stroke="currentColor"
-                          viewBox="0 0 24 24"
-                        >
-                          <path
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            strokeWidth={2}
-                            d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
-                          />
-                        </svg>
-                        {bulkDuplicates.length > 0
-                          ? `重複を除いて${
-                              bulkPreview.length - bulkDuplicates.length
-                            }件を追加`
-                          : `${bulkPreview.length}件を追加`}
-                      </>
-                    )}
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+      <BulkAddModal
+        isOpen={showBulkAddModal}
+        onClose={() => setShowBulkAddModal(false)}
+        onAccountsAdded={handleAccountsAdded}
+        allAccounts={allAccounts}
+      />
     </div>
   );
 }

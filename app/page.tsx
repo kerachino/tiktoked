@@ -38,10 +38,24 @@ export default function Home() {
   const [sortField, setSortField] = useState<SortField>("key");
   const [sortOrder, setSortOrder] = useState<SortOrder>("asc");
   const [page, setPage] = useState(1);
-  const [searchQuery, setSearchQuery] = useState("");
+
+  // 検索関連の状態（入力中の値と実際に適用される値）
+  const [searchInput, setSearchInput] = useState(""); // 入力中の値
+  const [searchQuery, setSearchQuery] = useState(""); // 検索ボタン押下時に適用される値
   const [searchType, setSearchType] = useState<"accountName" | "accountId">(
     "accountName"
   );
+
+  // 日付フィルター関連の状態（入力中の値と実際に適用される値）
+  const [dateFilterInput, setDateFilterInput] = useState<{
+    startDate: string;
+    endDate: string;
+    enabled: boolean;
+  }>({
+    startDate: "",
+    endDate: "",
+    enabled: false,
+  });
   const [dateFilter, setDateFilter] = useState<{
     startDate: string;
     endDate: string;
@@ -157,6 +171,20 @@ export default function Home() {
     }
   }, []);
 
+  // 検索ボタン押下時の処理
+  const handleSearchButtonClick = useCallback(() => {
+    // 入力中の値を検索条件として設定
+    setSearchQuery(searchInput);
+    // 日付フィルターも適用
+    setDateFilter(dateFilterInput);
+    // 1ページ目に戻る
+    setPage(1);
+
+    debugLog(
+      `検索ボタン押下: 検索クエリ="${searchInput}", 日付フィルター=${dateFilterInput.enabled}`
+    );
+  }, [searchInput, dateFilterInput]);
+
   // フィルタリングされたアカウントを計算
   useEffect(() => {
     if (allAccounts.length === 0) {
@@ -166,7 +194,7 @@ export default function Home() {
 
     let filtered = [...allAccounts];
 
-    // 検索クエリでフィルタリング
+    // 検索クエリでフィルタリング（searchQueryが空でない場合のみ）
     if (searchQuery.trim() !== "") {
       const query = searchQuery.toLowerCase().trim();
       filtered = filtered.filter((account) => {
@@ -178,7 +206,7 @@ export default function Home() {
       });
     }
 
-    // 日付範囲でフィルタリング
+    // 日付範囲でフィルタリング（dateFilter.enabledがtrueの場合のみ）
     if (dateFilter.enabled && (dateFilter.startDate || dateFilter.endDate)) {
       filtered = filtered.filter((account) => {
         if (!account.addedDate || account.addedDate.trim() === "") return false;
@@ -411,39 +439,39 @@ export default function Home() {
     }
   };
 
-  // 検索処理
-  const handleSearch = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const value = e.target.value;
-    setSearchQuery(value);
-    setPage(1); // 検索時は1ページ目に戻る
-  }, []);
+  // 検索入力ハンドラー（即時検索はしない）
+  const handleSearchInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setSearchInput(e.target.value);
+  };
 
   // 検索タイプ切り替え
   const handleSearchTypeChange = (type: "accountName" | "accountId") => {
     setSearchType(type);
-    setPage(1); // 切り替え時は1ページ目に戻る
   };
 
-  // 日付フィルター変更
-  const handleDateFilterChange = (
+  // 日付フィルター入力変更ハンドラー
+  const handleDateFilterInputChange = (
     field: "startDate" | "endDate" | "enabled",
     value: any
   ) => {
-    setDateFilter((prev) => ({
+    setDateFilterInput((prev) => ({
       ...prev,
       [field]: value,
     }));
-    setPage(1); // フィルター変更時は1ページ目に戻る
   };
 
   // 日付フィルターリセット
   const resetDateFilter = () => {
+    setDateFilterInput({
+      startDate: "",
+      endDate: "",
+      enabled: false,
+    });
     setDateFilter({
       startDate: "",
       endDate: "",
       enabled: false,
     });
-    setPage(1);
   };
 
   // 無限スクロールの設定 - IntersectionObserverの初期化
@@ -903,6 +931,7 @@ export default function Home() {
 
   // 検索とフィルターのリセット
   const resetFilters = () => {
+    setSearchInput("");
     setSearchQuery("");
     resetDateFilter();
     setShowFavoritesOnly(false);
@@ -1081,8 +1110,8 @@ export default function Home() {
                 </div>
                 <input
                   type="text"
-                  value={searchQuery}
-                  onChange={handleSearch}
+                  value={searchInput}
+                  onChange={handleSearchInputChange}
                   placeholder={`${
                     searchType === "accountName" ? "名前" : "ID"
                   }で検索...`}
@@ -1100,9 +1129,9 @@ export default function Home() {
                 <div className="flex items-center">
                   <input
                     type="checkbox"
-                    checked={dateFilter.enabled}
+                    checked={dateFilterInput.enabled}
                     onChange={(e) =>
-                      handleDateFilterChange("enabled", e.target.checked)
+                      handleDateFilterInputChange("enabled", e.target.checked)
                     }
                     className="h-3 w-3 md:h-4 md:w-4 text-blue-600 rounded"
                   />
@@ -1118,11 +1147,11 @@ export default function Home() {
                   </label>
                   <input
                     type="date"
-                    value={dateFilter.startDate}
+                    value={dateFilterInput.startDate}
                     onChange={(e) =>
-                      handleDateFilterChange("startDate", e.target.value)
+                      handleDateFilterInputChange("startDate", e.target.value)
                     }
-                    disabled={!dateFilter.enabled}
+                    disabled={!dateFilterInput.enabled}
                     className="w-full px-2 md:px-3 py-1 md:py-2 border border-gray-300 rounded-lg text-xs md:text-sm disabled:bg-gray-100 disabled:text-gray-400"
                   />
                 </div>
@@ -1132,11 +1161,11 @@ export default function Home() {
                   </label>
                   <input
                     type="date"
-                    value={dateFilter.endDate}
+                    value={dateFilterInput.endDate}
                     onChange={(e) =>
-                      handleDateFilterChange("endDate", e.target.value)
+                      handleDateFilterInputChange("endDate", e.target.value)
                     }
-                    disabled={!dateFilter.enabled}
+                    disabled={!dateFilterInput.enabled}
                     className="w-full px-2 md:px-3 py-1 md:py-2 border border-gray-300 rounded-lg text-xs md:text-sm disabled:bg-gray-100 disabled:text-gray-400"
                   />
                 </div>
@@ -1145,6 +1174,12 @@ export default function Home() {
 
             {/* アクションボタン */}
             <div className="flex items-end space-x-1 md:space-x-2">
+              <button
+                onClick={handleSearchButtonClick}
+                className="px-3 md:px-6 py-2 md:py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium text-sm md:text-base"
+              >
+                検索
+              </button>
               <button
                 onClick={resetFilters}
                 className="px-2 md:px-4 py-1 md:py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors text-xs md:text-sm"
@@ -1158,6 +1193,30 @@ export default function Home() {
               )}
             </div>
           </div>
+
+          {/* 現在の検索条件表示 */}
+          {(searchQuery || dateFilter.enabled) && (
+            <div className="mt-3 p-2 md:p-3 bg-gray-50 rounded-lg">
+              <p className="text-xs md:text-sm text-gray-700 font-medium mb-1">
+                現在の検索条件:
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {searchQuery && (
+                  <span className="inline-flex items-center px-2 py-1 rounded-full text-xs bg-blue-100 text-blue-800">
+                    {searchType === "accountName" ? "名前" : "ID"}:{" "}
+                    {searchQuery}
+                  </span>
+                )}
+                {dateFilter.enabled && (
+                  <span className="inline-flex items-center px-2 py-1 rounded-full text-xs bg-green-100 text-green-800">
+                    追加日絞り込み:
+                    {dateFilter.startDate && ` ${dateFilter.startDate}`}
+                    {dateFilter.endDate && ` 〜 ${dateFilter.endDate}`}
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
         </div>
 
         {displayedAccounts.length > 0 ? (

@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { ref, get, update, set } from "firebase/database";
 import { db } from "@/lib/firebase";
 import { TikTokAccount, SortField, SortOrder } from "@/types/tiktok";
+import AccountTable from "@/components/AccountTable";
 
 // デバッグ用のログ関数
 const debugLog = (...args: any[]) => {
@@ -48,12 +49,16 @@ export default function Home() {
     enabled: false,
   });
 
+  // お気に入りフィルター状態
+  const [showFavoritesOnly, setShowFavoritesOnly] = useState(false);
+
   // アカウント追加モーダル状態
   const [showAddModal, setShowAddModal] = useState(false);
   const [newAccount, setNewAccount] = useState({
     accountName: "",
     accountId: "",
     amount: "0",
+    favorite: false,
   });
   const [addingAccount, setAddingAccount] = useState(false);
 
@@ -110,6 +115,7 @@ export default function Home() {
                 account.LastCheckedDate || account.lastCheckedDate || "",
               amount: account.Amount || account.amount || "",
               addedDate: account.AddedDate || account.addedDate || "",
+              favorite: account.Favorite || account.favorite || false,
             });
           }
         });
@@ -186,11 +192,16 @@ export default function Home() {
       });
     }
 
+    // お気に入りフィルター
+    if (showFavoritesOnly) {
+      filtered = filtered.filter((account) => account.favorite);
+    }
+
     debugLog(
-      `フィルタリング完了: ${filtered.length}件（検索: "${searchQuery}", 日付絞り込み: ${dateFilter.enabled})`
+      `フィルタリング完了: ${filtered.length}件（検索: "${searchQuery}", 日付絞り込み: ${dateFilter.enabled}, お気に入りのみ: ${showFavoritesOnly})`
     );
     return filtered;
-  }, [allAccounts, searchQuery, searchType, dateFilter]);
+  }, [allAccounts, searchQuery, searchType, dateFilter, showFavoritesOnly]);
 
   // ソートされたアカウントを計算
   const sortedAccounts = useMemo(() => {
@@ -220,6 +231,16 @@ export default function Home() {
       if (sortField === "amount") {
         valueA = valueA ? parseInt(valueA) : 0;
         valueB = valueB ? parseInt(valueB) : 0;
+      }
+
+      // Favoriteの場合は真偽値として比較
+      if (sortField === "favorite") {
+        // お気に入りを優先して表示（降順の場合は逆）
+        if (sortOrder === "desc") {
+          return (valueA ? 1 : 0) - (valueB ? 1 : 0);
+        } else {
+          return (valueB ? 1 : 0) - (valueA ? 1 : 0);
+        }
       }
 
       // 文字列比較（日本語対応）
@@ -338,6 +359,33 @@ export default function Home() {
       return "bg-green-100 text-green-700"; // チェック済み
     } else {
       return "bg-red-100 text-red-700"; // その他（エラー）
+    }
+  };
+
+  // お気に入りを切り替え
+  const toggleFavorite = async (accountKey: string) => {
+    try {
+      const account = allAccounts.find((acc) => acc.key === accountKey);
+      if (!account) return;
+
+      const newFavorite = !account.favorite;
+
+      const accountRef = ref(db, `__collections__/myfollow/${accountKey}`);
+      await update(accountRef, {
+        Favorite: newFavorite,
+      });
+
+      // ローカル状態を即時更新
+      setAllAccounts((prevAccounts) =>
+        prevAccounts.map((acc) =>
+          acc.key === accountKey ? { ...acc, favorite: newFavorite } : acc
+        )
+      );
+
+      debugLog(`お気に入りを${newFavorite ? "追加" : "解除"}: ${accountKey}`);
+    } catch (error) {
+      console.error("お気に入り更新エラー:", error);
+      alert("お気に入りの更新に失敗しました。");
     }
   };
 
@@ -546,6 +594,7 @@ export default function Home() {
         Amount: newAccount.amount || "0",
         LastCheckedDate: formattedDate,
         AddedDate: formattedDate,
+        Favorite: newAccount.favorite,
       };
 
       // Firebaseに追加
@@ -560,6 +609,7 @@ export default function Home() {
         amount: newAccount.amount || "0",
         lastCheckedDate: formattedDate,
         addedDate: formattedDate,
+        favorite: newAccount.favorite,
       };
 
       setAllAccounts((prev) => [...prev, newAccountObj]);
@@ -570,6 +620,7 @@ export default function Home() {
         accountName: "",
         accountId: "",
         amount: "0",
+        favorite: false,
       });
 
       alert("アカウントを追加しました");
@@ -746,6 +797,7 @@ export default function Home() {
           Amount: "0", // 初期値は0
           LastCheckedDate: formattedDate,
           AddedDate: formattedDate,
+          Favorite: false, // 初期値はfalse
         };
 
         // Firebaseに追加
@@ -760,6 +812,7 @@ export default function Home() {
           amount: "0",
           lastCheckedDate: formattedDate,
           addedDate: formattedDate,
+          favorite: false,
         });
 
         addedCount++;
@@ -836,6 +889,7 @@ export default function Home() {
   const resetFilters = () => {
     setSearchQuery("");
     resetDateFilter();
+    setShowFavoritesOnly(false);
     setPage(1);
   };
 
@@ -864,7 +918,6 @@ export default function Home() {
             <p className="text-sm md:text-base text-gray-600">
               全{sortedAccounts.length}件のアカウント（
               {displayedAccounts.length}件表示中）
-              {hasMore && `（さらに読み込み可能）`}
             </p>
             <div className="text-xs md:text-sm bg-blue-100 text-blue-800 px-2 md:px-3 py-1 rounded-full">
               ソート: {getSortFieldName(sortField)} (
@@ -917,6 +970,48 @@ export default function Home() {
                   />
                 </svg>
                 一括
+              </button>
+              <button
+                onClick={() => setShowFavoritesOnly(!showFavoritesOnly)}
+                className={`text-xs md:text-sm px-2 md:px-3 py-1 rounded-full transition-colors flex items-center ${
+                  showFavoritesOnly
+                    ? "bg-red-600 text-white hover:bg-red-700"
+                    : "bg-gray-200 text-gray-700 hover:bg-gray-300"
+                }`}
+              >
+                {showFavoritesOnly ? (
+                  <>
+                    <svg
+                      className="w-3 h-3 md:w-4 md:h-4 mr-1"
+                      fill="currentColor"
+                      viewBox="0 0 20 20"
+                    >
+                      <path
+                        fillRule="evenodd"
+                        d="M3.172 5.172a4 4 0 015.656 0L10 6.343l1.172-1.171a4 4 0 115.656 5.656L10 17.657l-6.828-6.829a4 4 0 010-5.656z"
+                        clipRule="evenodd"
+                      />
+                    </svg>
+                    お気に入り解除
+                  </>
+                ) : (
+                  <>
+                    <svg
+                      className="w-3 h-3 md:w-4 md:h-4 mr-1"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z"
+                      />
+                    </svg>
+                    お気に入りのみ
+                  </>
+                )}
               </button>
             </div>
           </div>
@@ -1039,7 +1134,7 @@ export default function Home() {
               >
                 フィルターリセット
               </button>
-              {(searchQuery || dateFilter.enabled) && (
+              {(searchQuery || dateFilter.enabled || showFavoritesOnly) && (
                 <div className="text-xs md:text-sm text-gray-600">
                   {sortedAccounts.length}件
                 </div>
@@ -1048,320 +1143,25 @@ export default function Home() {
           </div>
         </div>
 
-        {displayedAccounts.length > 0 ? (
-          <>
-            {/* Amountの意味説明（モバイル用） */}
-            <div className="mb-3 md:hidden bg-white rounded-lg shadow p-3">
-              <h3 className="text-sm font-medium text-gray-700 mb-2">
-                Amountの意味:
-              </h3>
-              <div className="grid grid-cols-2 gap-2 text-xs">
-                <div className="flex items-center">
-                  <span className="w-3 h-3 rounded-full bg-gray-100 mr-2"></span>
-                  <span>-2: 削除済み</span>
-                </div>
-                <div className="flex items-center">
-                  <span className="w-3 h-3 rounded-full bg-yellow-100 mr-2"></span>
-                  <span>-1: 無視してよい</span>
-                </div>
-                <div className="flex items-center">
-                  <span className="w-3 h-3 rounded-full bg-blue-100 mr-2"></span>
-                  <span>0: 未チェック</span>
-                </div>
-                <div className="flex items-center">
-                  <span className="w-3 h-3 rounded-full bg-green-100 mr-2"></span>
-                  <span>1+: チェック済み</span>
-                </div>
-              </div>
-            </div>
-
-            <div className="bg-white rounded-lg md:rounded-xl shadow-md overflow-hidden">
-              <div className="overflow-x-auto">
-                <table className="min-w-full divide-y divide-gray-200">
-                  <thead className="bg-gray-100">
-                    <tr>
-                      <th
-                        className="px-3 md:px-6 py-2 md:py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-200 transition-colors group"
-                        onClick={() => handleSort("key")}
-                      >
-                        <div className="flex items-center justify-between">
-                          <span className="group-hover:text-blue-600">#</span>
-                          <span className="ml-1">{getSortIcon("key")}</span>
-                        </div>
-                      </th>
-                      <th
-                        className="px-3 md:px-6 py-2 md:py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-200 transition-colors group"
-                        onClick={() => handleSort("accountName")}
-                      >
-                        <div className="flex items-center justify-between">
-                          <span className="group-hover:text-blue-600">
-                            アカウント
-                          </span>
-                          <span className="ml-1">
-                            {getSortIcon("accountName")}
-                          </span>
-                        </div>
-                      </th>
-                      {/* スマホではID列を非表示 */}
-                      <th
-                        className="px-3 md:px-6 py-2 md:py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-200 transition-colors group hidden md:table-cell"
-                        onClick={() => handleSort("accountId")}
-                      >
-                        <div className="flex items-center justify-between">
-                          <span className="group-hover:text-blue-600">ID</span>
-                          <span className="ml-1">
-                            {getSortIcon("accountId")}
-                          </span>
-                        </div>
-                      </th>
-                      <th
-                        className="px-3 md:px-6 py-2 md:py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-200 transition-colors group"
-                        onClick={() => handleSort("lastCheckedDate")}
-                      >
-                        <div className="flex items-center justify-between">
-                          <span className="group-hover:text-blue-600">
-                            最終確認
-                          </span>
-                          <span className="ml-1">
-                            {getSortIcon("lastCheckedDate")}
-                          </span>
-                        </div>
-                      </th>
-                      <th
-                        className="px-3 md:px-6 py-2 md:py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-200 transition-colors group"
-                        onClick={() => handleSort("amount")}
-                      >
-                        <div className="flex items-center justify-between">
-                          <span className="group-hover:text-blue-600">
-                            Amount
-                          </span>
-                          <span className="ml-1">{getSortIcon("amount")}</span>
-                        </div>
-                      </th>
-                      <th
-                        className="px-3 md:px-6 py-2 md:py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-200 transition-colors group"
-                        onClick={() => handleSort("addedDate")}
-                      >
-                        <div className="flex items-center justify-between">
-                          <span className="group-hover:text-blue-600">
-                            追加日
-                          </span>
-                          <span className="ml-1">
-                            {getSortIcon("addedDate")}
-                          </span>
-                        </div>
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody className="bg-white divide-y divide-gray-200">
-                    {displayedAccounts.map((account, index) => (
-                      <tr
-                        key={`${account.key}-${index}-${page}`}
-                        className="hover:bg-gray-50 transition-colors"
-                      >
-                        <td className="px-3 md:px-6 py-2 md:py-3 whitespace-nowrap">
-                          <div className="font-medium text-gray-900 font-mono text-sm">
-                            {account.key}
-                          </div>
-                        </td>
-                        <td className="px-3 md:px-6 py-2 md:py-3">
-                          <div>
-                            <button
-                              onClick={() => handleOpenLink(account)}
-                              className="font-medium text-blue-600 hover:text-blue-800 hover:underline transition-colors text-left text-sm"
-                              title="TikTokで開く"
-                            >
-                              {account.accountName}
-                            </button>
-                            {/* スマホのみ：アカウント名の下に小さくIDを表示 */}
-                            <div className="md:hidden mt-1">
-                              <div className="text-xs text-gray-500 font-mono truncate">
-                                {account.accountId}
-                              </div>
-                            </div>
-                          </div>
-                        </td>
-                        {/* スマホではID列を非表示 */}
-                        <td className="px-3 md:px-6 py-2 md:py-3 whitespace-nowrap hidden md:table-cell">
-                          <div className="text-gray-700 font-mono text-sm">
-                            {account.accountId}
-                          </div>
-                        </td>
-                        <td
-                          className={getDateCellStyle(account.lastCheckedDate)}
-                        >
-                          <div className="text-gray-700 text-sm">
-                            {formatDate(account.lastCheckedDate)}
-                          </div>
-                        </td>
-                        <td className="px-3 md:px-6 py-2 md:py-3 whitespace-nowrap">
-                          <div className="flex items-center space-x-1 md:space-x-3">
-                            <button
-                              onClick={() => updateAmount(account.key, -1)}
-                              className="w-6 h-6 md:w-8 md:h-8 flex items-center justify-center bg-red-100 text-red-600 rounded-full hover:bg-red-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                              aria-label="減らす"
-                              disabled={parseInt(account.amount) <= -2}
-                              title="減らす"
-                            >
-                              -
-                            </button>
-                            <div className="relative group">
-                              <span
-                                className={`font-semibold text-sm md:text-lg min-w-8 md:min-w-12 text-center px-2 py-1 rounded ${getAmountStyle(
-                                  account.amount || "0"
-                                )}`}
-                              >
-                                {account.amount || "0"}
-                              </span>
-                              <div className="absolute z-10 invisible group-hover:visible bottom-full left-1/2 transform -translate-x-1/2 mb-2 px-2 py-1 bg-gray-800 text-white text-xs rounded whitespace-nowrap">
-                                {getAmountMeaning(account.amount || "0")}
-                                <div className="absolute top-full left-1/2 transform -translate-x-1/2 border-4 border-transparent border-t-gray-800"></div>
-                              </div>
-                            </div>
-                            <button
-                              onClick={() => updateAmount(account.key, 1)}
-                              className="w-6 h-6 md:w-8 md:h-8 flex items-center justify-center bg-green-100 text-green-600 rounded-full hover:bg-green-200 transition-colors"
-                              aria-label="増やす"
-                              title="増やす"
-                            >
-                              +
-                            </button>
-                          </div>
-                        </td>
-                        <td className="px-3 md:px-6 py-2 md:py-3 whitespace-nowrap">
-                          <div className="text-gray-500 text-sm">
-                            {formatDate(account.addedDate)}
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-
-            {/* 読み込み中の表示 */}
-            {loadingMore && (
-              <div className="mt-4 md:mt-6 text-center">
-                <div className="inline-flex items-center justify-center space-x-2 md:space-x-3">
-                  <div className="animate-spin rounded-full h-6 w-6 md:h-8 md:w-8 border-b-2 border-blue-600"></div>
-                  <div className="text-sm md:text-base text-gray-600">
-                    読み込み中...
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* スクロール用のトリガー要素 */}
-            {hasMore && !loadingMore && (
-              <div className="mt-4 md:mt-6 space-y-3 md:space-y-4">
-                <div
-                  ref={loadMoreRef}
-                  className="h-12 md:h-20 flex items-center justify-center"
-                >
-                  <div className="text-center">
-                    <div className="animate-bounce text-xl md:text-2xl text-blue-500">
-                      ↓
-                    </div>
-                    <p className="mt-1 md:mt-2 text-xs md:text-sm text-gray-500">
-                      スクロールしてさらに読み込む
-                    </p>
-                  </div>
-                </div>
-                <div className="text-center">
-                  <button
-                    onClick={handleManualLoadMore}
-                    className="px-3 md:px-4 py-1 md:py-2 bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200 transition-colors text-xs md:text-sm"
-                  >
-                    クリックして次の10件を読み込む
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {/* 全件表示完了のメッセージ */}
-            {!hasMore && displayedAccounts.length > 0 && (
-              <div className="mt-4 md:mt-6 text-center">
-                <div className="inline-flex items-center px-3 md:px-4 py-1 md:py-2 bg-green-50 text-green-700 rounded-full">
-                  <svg
-                    className="w-4 h-4 md:w-5 md:h-5 mr-1 md:mr-2"
-                    fill="currentColor"
-                    viewBox="0 0 20 20"
-                  >
-                    <path
-                      fillRule="evenodd"
-                      d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
-                      clipRule="evenodd"
-                    />
-                  </svg>
-                  <span className="text-sm md:text-base font-medium">
-                    すべてのデータを表示しました
-                  </span>
-                  <span className="ml-1 md:ml-2 text-xs md:text-sm">
-                    （全{sortedAccounts.length}件）
-                  </span>
-                </div>
-              </div>
-            )}
-
-            <div className="mt-6 md:mt-8 text-xs md:text-sm text-gray-500 space-y-2">
-              <div className="hidden md:flex items-center gap-2">
-                <div className="flex items-center">
-                  <div className="w-3 h-3 bg-gray-100 rounded-full mr-2"></div>
-                  <span>-2: 削除済みアカウント</span>
-                </div>
-                <div className="flex items-center ml-4">
-                  <div className="w-3 h-3 bg-yellow-100 rounded-full mr-2"></div>
-                  <span>-1: 無視してよいアカウント</span>
-                </div>
-                <div className="flex items-center ml-4">
-                  <div className="w-3 h-3 bg-blue-100 rounded-full mr-2"></div>
-                  <span>0: 通常アカウント（未チェック）</span>
-                </div>
-                <div className="flex items-center ml-4">
-                  <div className="w-3 h-3 bg-green-100 rounded-full mr-2"></div>
-                  <span>1+: チェック済み</span>
-                </div>
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-1 md:gap-2">
-                <p>※ アカウント名をクリックするとTikTokのページが開きます</p>
-                <p>※ ヘッダーをクリックすると並び替えができます</p>
-                <p>※ TikTokリンクを開くと最終確認日が更新されます</p>
-                <p>※ Amountボタンで-2から調整可能（ホバーで意味表示）</p>
-              </div>
-            </div>
-          </>
-        ) : (
-          <div className="bg-white rounded-lg md:rounded-xl shadow-md p-6 md:p-8 text-center">
-            <div className="text-3xl md:text-4xl mb-3 md:mb-4">📱</div>
-            <p className="text-base md:text-lg text-gray-600 mb-2">
-              {searchQuery || dateFilter.enabled
-                ? "検索条件に一致するデータがありません"
-                : "データが見つかりませんでした"}
-            </p>
-            <p className="text-xs md:text-sm text-gray-500 mb-4 md:mb-6">
-              {searchQuery || dateFilter.enabled
-                ? "検索条件を変更するか、フィルターをリセットしてください"
-                : "Firebaseにデータが存在するか確認してください"}
-            </p>
-            <div className="space-x-2 md:space-x-4">
-              <button
-                onClick={fetchAllData}
-                className="px-4 md:px-6 py-2 md:py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium text-sm md:text-base"
-              >
-                データを読み込む
-              </button>
-              {(searchQuery || dateFilter.enabled) && (
-                <button
-                  onClick={resetFilters}
-                  className="px-4 md:px-6 py-2 md:py-3 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors font-medium text-sm md:text-base"
-                >
-                  フィルターをリセット
-                </button>
-              )}
-            </div>
-          </div>
-        )}
+        {/* AccountTableコンポーネントを使用 */}
+        <AccountTable
+          accounts={displayedAccounts}
+          loadingMore={loadingMore}
+          hasMore={hasMore}
+          sortField={sortField}
+          sortOrder={sortOrder}
+          onSort={handleSort}
+          onOpenLink={handleOpenLink}
+          onUpdateAmount={updateAmount}
+          onToggleFavorite={toggleFavorite}
+          getAmountMeaning={getAmountMeaning}
+          getAmountStyle={getAmountStyle}
+          formatDate={formatDate}
+          getDateCellStyle={getDateCellStyle}
+          getSortIcon={getSortIcon}
+          onManualLoadMore={handleManualLoadMore}
+          loadMoreRef={loadMoreRef}
+        />
       </div>
 
       {/* アカウント追加モーダル */}
@@ -1451,6 +1251,28 @@ export default function Home() {
                   <p className="mt-1 text-xs text-gray-500">
                     初期値（-2:削除済み, -1:無視してよい, 0:通常）
                   </p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1 md:mb-2">
+                    お気に入りに追加
+                  </label>
+                  <div className="flex items-center">
+                    <input
+                      type="checkbox"
+                      checked={newAccount.favorite}
+                      onChange={(e) =>
+                        setNewAccount({
+                          ...newAccount,
+                          favorite: e.target.checked,
+                        })
+                      }
+                      className="h-4 w-4 text-red-600 rounded focus:ring-red-500 border-gray-300"
+                    />
+                    <span className="ml-2 text-sm text-gray-700">
+                      追加時にお気に入りに登録する
+                    </span>
+                  </div>
                 </div>
 
                 <div className="pt-3 md:pt-4 border-t border-gray-200">
@@ -1688,6 +1510,7 @@ export default function Home() {
                       <li>• 最終確認日: 今日の日付</li>
                       <li>• 追加日: 今日の日付</li>
                       <li>• Amount: 0（初期値）</li>
+                      <li>• Favorite: false（初期値）</li>
                       <li>• 重複するIDは自動的にスキップされます</li>
                       <li>• 自動的に連番でIDが採番されます</li>
                     </ul>
@@ -1758,6 +1581,8 @@ function getSortFieldName(field: SortField): string {
       return "最終確認日";
     case "amount":
       return "Amount";
+    case "favorite":
+      return "お気に入り";
     case "addedDate":
       return "追加日";
     default:

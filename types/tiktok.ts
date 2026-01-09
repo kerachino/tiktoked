@@ -5,6 +5,7 @@ export interface TikTokAccount {
   lastCheckedDate: string;
   amount: string;
   addedDate: string;
+  favorite: boolean;
 }
 
 export interface BulkPreviewAccount {
@@ -26,5 +27,6 @@ export type SortField =
   | "accountId"
   | "lastCheckedDate"
   | "amount"
+  | "favorite"
   | "addedDate";
 export type SortOrder = "asc" | "desc";

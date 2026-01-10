@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback, useRef, useMemo } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { ref, get, update, set } from "firebase/database";
 import { db } from "@/lib/firebase";
 import { TikTokAccount, SortField, SortOrder } from "@/types/tiktok";
@@ -14,9 +14,8 @@ const debugLog = (...args: any[]) => {
   }
 };
 
-// Amountの意味を定義
+// Amountの意味を定義（-2を削除）
 const AMOUNT_MEANINGS = {
-  "-2": "削除済みアカウント",
   "-1": "無視してよいアカウント",
   "0": "通常アカウント（未チェック）",
   "1": "1回チェック済み",
@@ -39,14 +38,14 @@ export default function Home() {
   const [sortOrder, setSortOrder] = useState<SortOrder>("asc");
   const [page, setPage] = useState(1);
 
-  // 検索関連の状態（入力中の値と実際に適用される値）
-  const [searchInput, setSearchInput] = useState(""); // 入力中の値
-  const [searchQuery, setSearchQuery] = useState(""); // 検索ボタン押下時に適用される値
+  // 検索関連の状態
+  const [searchInput, setSearchInput] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
   const [searchType, setSearchType] = useState<"accountName" | "accountId">(
     "accountName"
   );
 
-  // 日付フィルター関連の状態（入力中の値と実際に適用される値）
+  // 日付フィルター関連の状態
   const [dateFilterInput, setDateFilterInput] = useState<{
     startDate: string;
     endDate: string;
@@ -69,47 +68,20 @@ export default function Home() {
   // お気に入りフィルター状態
   const [showFavoritesOnly, setShowFavoritesOnly] = useState(false);
 
+  // 削除済フィルター状態（新規追加）
+  const [showDeleted, setShowDeleted] = useState(true);
+
   // アカウント追加モーダル状態
   const [showAddModal, setShowAddModal] = useState(false);
-  const [newAccount, setNewAccount] = useState({
-    accountName: "",
-    accountId: "",
-    amount: "0",
-    favorite: false,
-  });
-  const [addingAccount, setAddingAccount] = useState(false);
-
-  // 一括アカウント追加時のハンドラー
-  const handleAccountsAdded = useCallback((newAccounts: TikTokAccount[]) => {
-    setAllAccounts((prev) => [...prev, ...newAccounts]);
-  }, []);
-
-  // アカウント追加時のハンドラー
-  const handleAccountAdded = useCallback((newAccount: TikTokAccount) => {
-    setAllAccounts((prev) => [...prev, newAccount]);
-  }, []);
 
   // 一括追加モーダル状態
   const [showBulkAddModal, setShowBulkAddModal] = useState(false);
-  const [bulkHtml, setBulkHtml] = useState("");
-  const [bulkProcessing, setBulkProcessing] = useState(false);
-  const [bulkPreview, setBulkPreview] = useState<
-    Array<{ accountName: string; accountId: string; previewKey: string }>
-  >([]);
-  const [bulkDuplicates, setBulkDuplicates] = useState<
-    Array<{
-      accountName: string;
-      accountId: string;
-      previewKey: string;
-      reason: string;
-    }>
-  >([]);
 
   const observerRef = useRef<IntersectionObserver | null>(null);
   const loadMoreRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Firebaseクエリの制限（1ページあたりの件数）
+  // Firebaseクエリの制限
   const PAGE_SIZE = 10;
 
   // 全データを取得
@@ -143,6 +115,8 @@ export default function Home() {
               amount: account.Amount || account.amount || "",
               addedDate: account.AddedDate || account.addedDate || "",
               favorite: account.Favorite || account.favorite || false,
+              // 削除済みフラグを追加（既存データとの互換性のため、初期値はfalse）
+              deleted: account.Deleted || account.deleted || false,
             });
           }
         });
@@ -173,16 +147,9 @@ export default function Home() {
 
   // 検索ボタン押下時の処理
   const handleSearchButtonClick = useCallback(() => {
-    // 入力中の値を検索条件として設定
     setSearchQuery(searchInput);
-    // 日付フィルターも適用
     setDateFilter(dateFilterInput);
-    // 1ページ目に戻る
     setPage(1);
-
-    debugLog(
-      `検索ボタン押下: 検索クエリ="${searchInput}", 日付フィルター=${dateFilterInput.enabled}`
-    );
   }, [searchInput, dateFilterInput]);
 
   // フィルタリングされたアカウントを計算
@@ -194,7 +161,12 @@ export default function Home() {
 
     let filtered = [...allAccounts];
 
-    // 検索クエリでフィルタリング（searchQueryが空でない場合のみ）
+    // 削除済みフィルター（新規追加）
+    if (!showDeleted) {
+      filtered = filtered.filter((account) => !account.deleted);
+    }
+
+    // 検索クエリでフィルタリング
     if (searchQuery.trim() !== "") {
       const query = searchQuery.toLowerCase().trim();
       filtered = filtered.filter((account) => {
@@ -206,7 +178,7 @@ export default function Home() {
       });
     }
 
-    // 日付範囲でフィルタリング（dateFilter.enabledがtrueの場合のみ）
+    // 日付範囲でフィルタリング
     if (dateFilter.enabled && (dateFilter.startDate || dateFilter.endDate)) {
       filtered = filtered.filter((account) => {
         if (!account.addedDate || account.addedDate.trim() === "") return false;
@@ -241,22 +213,25 @@ export default function Home() {
       filtered = filtered.filter((account) => account.favorite);
     }
 
-    debugLog(
-      `フィルタリング完了: ${filtered.length}件（検索: "${searchQuery}", 日付絞り込み: ${dateFilter.enabled}, お気に入りのみ: ${showFavoritesOnly})`
-    );
+    debugLog(`フィルタリング完了: ${filtered.length}件`);
     setFilteredAccounts(filtered);
-  }, [allAccounts, searchQuery, searchType, dateFilter, showFavoritesOnly]);
+  }, [
+    allAccounts,
+    searchQuery,
+    searchType,
+    dateFilter,
+    showFavoritesOnly,
+    showDeleted, // 新規追加
+  ]);
 
-  // ソートされたアカウントを計算（並び替え条件が変更された時のみ）
+  // ソートされたアカウントを計算
   useEffect(() => {
     if (filteredAccounts.length === 0) {
       setSortedAccounts([]);
       return;
     }
 
-    debugLog(
-      `ソート処理開始: ${sortField} ${sortOrder}, ${filteredAccounts.length}件`
-    );
+    debugLog(`ソート処理開始: ${sortField} ${sortOrder}`);
 
     const sorted = [...filteredAccounts].sort((a, b) => {
       let valueA: any = a[sortField];
@@ -282,7 +257,6 @@ export default function Home() {
 
       // Favoriteの場合は真偽値として比較
       if (sortField === "favorite") {
-        // お気に入りを優先して表示（降順の場合は逆）
         if (sortOrder === "desc") {
           return (valueA ? 1 : 0) - (valueB ? 1 : 0);
         } else {
@@ -321,10 +295,6 @@ export default function Home() {
     const endIndex = page * PAGE_SIZE;
     const displayed = sortedAccounts.slice(0, endIndex);
 
-    debugLog(
-      `表示アカウント計算: ページ${page}, ${displayed.length}/${sortedAccounts.length}件`
-    );
-
     // さらに読み込めるかどうかを更新
     const hasMoreItems = sortedAccounts.length > endIndex;
     if (hasMore !== hasMoreItems) {
@@ -337,38 +307,26 @@ export default function Home() {
   // 次のページを読み込む
   const loadNextPage = useCallback(() => {
     if (loadingMore || !hasMore) {
-      debugLog(
-        `loadNextPage スキップ: loadingMore=${loadingMore}, hasMore=${hasMore}`
-      );
       return;
     }
 
-    debugLog(`次のページ読み込み開始: 現在ページ${page}`);
     setLoadingMore(true);
-
-    // 次のページを設定
     const nextPage = page + 1;
     setTimeout(() => {
       setPage(nextPage);
       setLoadingMore(false);
-      debugLog(`次のページ読み込み完了: ページ${nextPage}`);
     }, 300);
   }, [loadingMore, hasMore, page]);
 
   // ソートハンドラー
   const handleSort = (field: SortField) => {
     if (sortField === field) {
-      // 同じフィールドの場合は昇順/降順を切り替え
       const newOrder = sortOrder === "asc" ? "desc" : "asc";
       setSortOrder(newOrder);
-      debugLog(`ソート切り替え: ${field} ${newOrder}`);
     } else {
-      // 異なるフィールドの場合は昇順で設定
       setSortField(field);
       setSortOrder("asc");
-      debugLog(`ソート変更: ${field} asc`);
     }
-    // ソート変更時は1ページ目に戻る
     setPage(1);
   };
 
@@ -383,25 +341,22 @@ export default function Home() {
   // Amountの意味を取得
   const getAmountMeaning = (amount: string) => {
     const amountNum = parseInt(amount) || 0;
-    if (amountNum >= -2 && amountNum <= 2) {
+    if (amountNum >= -1 && amountNum <= 2) {
       return (
         AMOUNT_MEANINGS[amount as keyof typeof AMOUNT_MEANINGS] ||
         `${amountNum}回チェック済み`
       );
-    } else if (amountNum > 2) {
-      return `${amountNum}回チェック済み`;
     } else {
       return "無効な値";
     }
   };
 
-  // Amountのスタイルを取得
+  // Amountのスタイルを取得（-2を削除）
   const getAmountStyle = (amount: string) => {
     const amountNum = parseInt(amount) || 0;
 
-    if (amountNum === -2) {
-      return "bg-gray-100 text-gray-600"; // 削除済み
-    } else if (amountNum === -1) {
+    // 通常のAmountスタイル
+    if (amountNum === -1) {
       return "bg-yellow-100 text-yellow-700"; // 無視してよい
     } else if (amountNum === 0) {
       return "bg-blue-100 text-blue-700"; // 未チェック
@@ -425,21 +380,50 @@ export default function Home() {
         Favorite: newFavorite,
       });
 
-      // ローカル状態を即時更新（並び替えを維持）
       setAllAccounts((prevAccounts) =>
         prevAccounts.map((acc) =>
           acc.key === accountKey ? { ...acc, favorite: newFavorite } : acc
         )
       );
-
-      debugLog(`お気に入りを${newFavorite ? "追加" : "解除"}: ${accountKey}`);
     } catch (error) {
       console.error("お気に入り更新エラー:", error);
       alert("お気に入りの更新に失敗しました。");
     }
   };
 
-  // 検索入力ハンドラー（即時検索はしない）
+  // 削除済み状態を切り替え（新規追加）
+  // 削除済み状態を切り替え（新規追加）- Amountは変更しない
+  const toggleDeleted = async (accountKey: string) => {
+    try {
+      const account = allAccounts.find((acc) => acc.key === accountKey);
+      if (!account) return;
+
+      const newDeleted = !account.deleted;
+
+      const accountRef = ref(db, `__collections__/myfollow/${accountKey}`);
+      await update(accountRef, {
+        Deleted: newDeleted,
+        // Amountは変更しない
+      });
+
+      setAllAccounts((prevAccounts) =>
+        prevAccounts.map((acc) =>
+          acc.key === accountKey
+            ? {
+                ...acc,
+                deleted: newDeleted,
+                // Amountは変更しない
+              }
+            : acc
+        )
+      );
+    } catch (error) {
+      console.error("削除済み更新エラー:", error);
+      alert("削除済み状態の更新に失敗しました。");
+    }
+  };
+
+  // 検索入力ハンドラー
   const handleSearchInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setSearchInput(e.target.value);
   };
@@ -474,29 +458,21 @@ export default function Home() {
     });
   };
 
-  // 無限スクロールの設定 - IntersectionObserverの初期化
+  // 無限スクロールの設定
   useEffect(() => {
     if (!loadMoreRef.current || !hasMore) {
-      debugLog(`IntersectionObserver 設定スキップ: hasMore=${hasMore}`);
       return;
     }
 
-    debugLog(`IntersectionObserver 設定開始`);
-
     const options = {
-      root: null, // ビューポートをルートとして使用
-      rootMargin: "100px", // 100px手前で検出
-      threshold: 0.1, // 10%表示された時点で検出
+      root: null,
+      rootMargin: "100px",
+      threshold: 0.1,
     };
 
     const observer = new IntersectionObserver((entries) => {
       const [entry] = entries;
-      debugLog(
-        `IntersectionObserver 検出: isIntersecting=${entry.isIntersecting}, hasMore=${hasMore}, loadingMore=${loadingMore}`
-      );
-
       if (entry.isIntersecting && hasMore && !loadingMore) {
-        debugLog("スクロール検出、次のページを読み込みます");
         loadNextPage();
       }
     }, options);
@@ -505,7 +481,6 @@ export default function Home() {
     observerRef.current = observer;
 
     return () => {
-      debugLog(`IntersectionObserver クリーンアップ`);
       if (observerRef.current) {
         observerRef.current.disconnect();
       }
@@ -519,29 +494,24 @@ export default function Home() {
 
   // 手動で次のページを読み込むボタンのハンドラー
   const handleManualLoadMore = () => {
-    debugLog(`手動で次のページを読み込み`);
     loadNextPage();
   };
 
   // TikTokリンクを開き、最終確認日を更新
   const handleOpenLink = async (account: TikTokAccount) => {
-    // TikTokリンクを開く
     window.open(`https://www.tiktok.com/@${account.accountId}`, "_blank");
 
-    // 今日の日付をYYYY/MM/DD形式で取得
     const today = new Date();
     const formattedDate = `${today.getFullYear()}/${(today.getMonth() + 1)
       .toString()
       .padStart(2, "0")}/${today.getDate().toString().padStart(2, "0")}`;
 
     try {
-      // Firebase Realtime Databaseを更新
       const accountRef = ref(db, `__collections__/myfollow/${account.key}`);
       await update(accountRef, {
         LastCheckedDate: formattedDate,
       });
 
-      // ローカル状態を即時更新（並び替えを維持）
       setAllAccounts((prevAccounts) =>
         prevAccounts.map((acc) =>
           acc.key === account.key
@@ -549,30 +519,24 @@ export default function Home() {
             : acc
         )
       );
-
-      debugLog(
-        `${account.accountName}の最終確認日を更新しました: ${formattedDate}`
-      );
     } catch (error) {
       console.error("更新エラー:", error);
-      alert("更新に失敗しました。コンソールを確認してください。");
+      alert("更新に失敗しました。");
     }
   };
 
-  // Amountを増減（最終確認日も更新）
+  // Amountを増減（最終確認日も更新）-1が最低値
   const updateAmount = async (accountKey: string, delta: number) => {
     try {
       const account = allAccounts.find((acc) => acc.key === accountKey);
       if (!account) return;
 
-      // 現在のAmountを数値に変換（空の場合は0）
       const currentAmount =
         account.amount && account.amount !== "" ? parseInt(account.amount) : 0;
 
-      // -2まで減らせるようにする
-      const newAmount = Math.max(-2, currentAmount + delta);
+      // -1まで減らせるようにする（-2は削除）
+      const newAmount = Math.max(-1, currentAmount + delta);
 
-      // 今日の日付をYYYY/MM/DD形式で取得
       const today = new Date();
       const formattedDate = `${today.getFullYear()}/${(today.getMonth() + 1)
         .toString()
@@ -580,13 +544,11 @@ export default function Home() {
 
       const accountRef = ref(db, `__collections__/myfollow/${accountKey}`);
 
-      // Amountと最終確認日を同時に更新
       await update(accountRef, {
         Amount: newAmount.toString(),
         LastCheckedDate: formattedDate,
       });
 
-      // ローカル状態を即時更新（並び替えを維持）
       setAllAccounts((prevAccounts) =>
         prevAccounts.map((acc) =>
           acc.key === accountKey
@@ -598,290 +560,9 @@ export default function Home() {
             : acc
         )
       );
-
-      debugLog(`Amountを更新しました: ${newAmount}, 最終確認日も更新`);
     } catch (error) {
       console.error("Amount更新エラー:", error);
       alert("Amountの更新に失敗しました。");
-    }
-  };
-
-  // アカウント追加処理
-  const handleAddAccount = async () => {
-    if (!newAccount.accountName.trim() || !newAccount.accountId.trim()) {
-      alert("アカウント名とIDは必須です");
-      return;
-    }
-
-    try {
-      setAddingAccount(true);
-
-      // 既存の全キーを取得して数値に変換
-      const existingKeys = allAccounts.map((acc) => parseInt(acc.key) || 0);
-
-      // 既存のキーが存在する場合は最大値、なければ0から開始
-      const maxKey = existingKeys.length > 0 ? Math.max(...existingKeys) : 0;
-
-      // 降順でキーを振り分け（常に最大値+1）
-      const newKey = maxKey + 1;
-
-      // 今日の日付をYYYY/MM/DD形式で取得
-      const today = new Date();
-      const formattedDate = `${today.getFullYear()}/${(today.getMonth() + 1)
-        .toString()
-        .padStart(2, "0")}/${today.getDate().toString().padStart(2, "0")}`;
-
-      // 新しいアカウントデータ
-      const accountData = {
-        AccountName: newAccount.accountName.trim(),
-        AccountID: newAccount.accountId.trim(),
-        Amount: newAccount.amount || "0",
-        LastCheckedDate: formattedDate,
-        AddedDate: formattedDate,
-        Favorite: newAccount.favorite,
-      };
-
-      // Firebaseに追加
-      const accountRef = ref(db, `__collections__/myfollow/${newKey}`);
-      await set(accountRef, accountData);
-
-      // ローカル状態に追加
-      const newAccountObj: TikTokAccount = {
-        key: newKey.toString(),
-        accountName: newAccount.accountName.trim(),
-        accountId: newAccount.accountId.trim(),
-        amount: newAccount.amount || "0",
-        lastCheckedDate: formattedDate,
-        addedDate: formattedDate,
-        favorite: newAccount.favorite,
-      };
-
-      setAllAccounts((prev) => [...prev, newAccountObj]);
-
-      // モーダルを閉じてフォームをリセット
-      setShowAddModal(false);
-      setNewAccount({
-        accountName: "",
-        accountId: "",
-        amount: "0",
-        favorite: false,
-      });
-
-      alert("アカウントを追加しました");
-    } catch (error) {
-      console.error("アカウント追加エラー:", error);
-      alert("アカウントの追加に失敗しました。");
-    } finally {
-      setAddingAccount(false);
-    }
-  };
-
-  // HTMLからアカウント情報を抽出してプレビュー
-  const parseBulkHtml = (html: string) => {
-    const tempDiv = document.createElement("div");
-    tempDiv.innerHTML = html;
-
-    // TikTokのHTML構造からアカウント情報を抽出
-    const accountElements = tempDiv.querySelectorAll(
-      "li .css-ra8pvn-5e6d46e3--DivUserItem"
-    );
-    const accounts: Array<{ accountName: string; accountId: string }> = [];
-
-    accountElements.forEach((element) => {
-      // アカウント名を取得（SpanNicknameクラス）
-      const nicknameElement = element.querySelector(
-        ".css-spk7wm-5e6d46e3--SpanNickname"
-      );
-      const accountName = nicknameElement?.textContent?.trim() || "";
-
-      // IDを取得（PUniqueIdクラス）
-      const uniqueIdElement = element.querySelector(
-        ".css-8sip1d-5e6d46e3--PUniqueId"
-      );
-      const accountId = uniqueIdElement?.textContent?.trim() || "";
-
-      // またはリンクからIDを取得
-      const linkElement = element.querySelector('a[href^="/@"]');
-      if (linkElement) {
-        const href = linkElement.getAttribute("href") || "";
-        const idFromHref = href.replace("/@", "").trim();
-        if (idFromHref && !accountId) {
-          // リンクから取得したIDを使用
-          accounts.push({
-            accountName,
-            accountId: idFromHref,
-          });
-          return;
-        }
-      }
-
-      if (accountName && accountId) {
-        accounts.push({ accountName, accountId });
-      }
-    });
-
-    return accounts;
-  };
-
-  // 一括追加のHTMLを解析してプレビュー
-  const handleBulkHtmlChange = (html: string) => {
-    setBulkHtml(html);
-
-    if (html.trim()) {
-      const accounts = parseBulkHtml(html);
-
-      // 既存の全キーを取得して数値に変換
-      const existingKeys = allAccounts.map((acc) => parseInt(acc.key) || 0);
-      const maxKey = existingKeys.length > 0 ? Math.max(...existingKeys) : 0;
-
-      // プレビューにキー番号を追加（降順で振り分け）
-      // 例: 既存の最大キーが10で3件追加の場合 → 13, 12, 11
-      const previewWithKeys = accounts.map((account, index) => ({
-        ...account,
-        previewKey: (maxKey + accounts.length - index).toString(),
-      }));
-
-      setBulkPreview(previewWithKeys);
-
-      // 重複チェック
-      const duplicates: Array<{
-        accountName: string;
-        accountId: string;
-        previewKey: string;
-        reason: string;
-      }> = [];
-      previewWithKeys.forEach((account, index) => {
-        // 既存のアカウントと比較
-        const existingAccount = allAccounts.find(
-          (acc) => acc.accountId === account.accountId
-        );
-
-        if (existingAccount) {
-          duplicates.push({
-            ...account,
-            reason: `ID "${account.accountId}" が既に存在します`,
-          });
-        }
-
-        // プレビュー内での重複チェック
-        const duplicateInPreview = previewWithKeys.find(
-          (acc, idx) => idx !== index && acc.accountId === account.accountId
-        );
-
-        if (
-          duplicateInPreview &&
-          !duplicates.some((d) => d.accountId === account.accountId)
-        ) {
-          duplicates.push({
-            ...account,
-            reason: `プレビュー内でIDが重複しています`,
-          });
-        }
-      });
-
-      setBulkDuplicates(duplicates);
-    } else {
-      setBulkPreview([]);
-      setBulkDuplicates([]);
-    }
-  };
-
-  // 一括アカウント追加処理
-  const handleBulkAddAccounts = async () => {
-    if (!bulkHtml.trim()) {
-      alert("HTMLを入力してください");
-      return;
-    }
-
-    const accounts = parseBulkHtml(bulkHtml);
-    if (accounts.length === 0) {
-      alert("有効なアカウント情報が見つかりませんでした");
-      return;
-    }
-
-    try {
-      setBulkProcessing(true);
-
-      // 既存の全キーを取得して数値に変換
-      const existingKeys = allAccounts.map((acc) => parseInt(acc.key) || 0);
-
-      // 既存のキーが存在する場合は最大値、なければ0から開始
-      const maxKey = existingKeys.length > 0 ? Math.max(...existingKeys) : 0;
-
-      const today = new Date();
-      const formattedDate = `${today.getFullYear()}/${(today.getMonth() + 1)
-        .toString()
-        .padStart(2, "0")}/${today.getDate().toString().padStart(2, "0")}`;
-
-      const newAccounts: TikTokAccount[] = [];
-      let addedCount = 0;
-      let skippedCount = 0;
-
-      // 重複を除いてアカウントを追加（降順でキーを振り分け）
-      for (let i = 0; i < accounts.length; i++) {
-        const account = accounts[i];
-
-        // 重複チェック
-        const existingAccount = allAccounts.find(
-          (acc) => acc.accountId === account.accountId
-        );
-
-        if (existingAccount) {
-          skippedCount++;
-          continue;
-        }
-
-        // 降順でキーを振り分け（最大値 + 追加件数 - インデックス）
-        const newKey = maxKey + accounts.length - i;
-
-        // 新しいアカウントデータ
-        const accountData = {
-          AccountName: account.accountName,
-          AccountID: account.accountId,
-          Amount: "0", // 初期値は0
-          LastCheckedDate: formattedDate,
-          AddedDate: formattedDate,
-          Favorite: false, // 初期値はfalse
-        };
-
-        // Firebaseに追加
-        const accountRef = ref(db, `__collections__/myfollow/${newKey}`);
-        await set(accountRef, accountData);
-
-        // ローカル状態に追加
-        newAccounts.push({
-          key: newKey.toString(),
-          accountName: account.accountName,
-          accountId: account.accountId,
-          amount: "0",
-          lastCheckedDate: formattedDate,
-          addedDate: formattedDate,
-          favorite: false,
-        });
-
-        addedCount++;
-      }
-
-      // ローカル状態を更新
-      if (newAccounts.length > 0) {
-        setAllAccounts((prev) => [...prev, ...newAccounts]);
-      }
-
-      // モーダルを閉じてフォームをリセット
-      setShowBulkAddModal(false);
-      setBulkHtml("");
-      setBulkPreview([]);
-      setBulkDuplicates([]);
-
-      // 結果を通知
-      alert(
-        `${addedCount}件のアカウントを追加しました（${skippedCount}件スキップ）`
-      );
-    } catch (error) {
-      console.error("一括追加エラー:", error);
-      alert("一括追加に失敗しました。コンソールを確認してください。");
-    } finally {
-      setBulkProcessing(false);
     }
   };
 
@@ -922,9 +603,7 @@ export default function Home() {
       } else if (diffDays > 7) {
         return "px-4 py-3 whitespace-nowrap bg-orange-50";
       }
-    } catch {
-      // 日付パースエラー時はデフォルトスタイル
-    }
+    } catch {}
 
     return "px-4 py-3 whitespace-nowrap";
   };
@@ -937,6 +616,16 @@ export default function Home() {
     setShowFavoritesOnly(false);
     setPage(1);
   };
+
+  // アカウント追加時のハンドラー
+  const handleAccountAdded = useCallback((newAccount: TikTokAccount) => {
+    setAllAccounts((prev) => [...prev, newAccount]);
+  }, []);
+
+  // 一括アカウント追加時のハンドラー
+  const handleAccountsAdded = useCallback((newAccounts: TikTokAccount[]) => {
+    setAllAccounts((prev) => [...prev, ...newAccounts]);
+  }, []);
 
   if (loading) {
     return (
@@ -1056,6 +745,51 @@ export default function Home() {
                       />
                     </svg>
                     お気に入りのみ
+                  </>
+                )}
+              </button>
+              {/* 削除済み表示/非表示ボタン（新規追加） */}
+              <button
+                onClick={() => setShowDeleted(!showDeleted)}
+                className={`text-xs md:text-sm px-2 md:px-3 py-1 rounded-full transition-colors flex items-center ${
+                  showDeleted
+                    ? "bg-gray-600 text-white hover:bg-gray-700"
+                    : "bg-gray-200 text-gray-700 hover:bg-gray-300"
+                }`}
+              >
+                {showDeleted ? (
+                  <>
+                    <svg
+                      className="w-3 h-3 md:w-4 md:h-4 mr-1"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                      />
+                    </svg>
+                    削除済非表示
+                  </>
+                ) : (
+                  <>
+                    <svg
+                      className="w-3 h-3 md:w-4 md:h-4 mr-1"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"
+                      />
+                    </svg>
+                    削除済表示
                   </>
                 )}
               </button>
@@ -1228,10 +962,6 @@ export default function Home() {
               </h3>
               <div className="grid grid-cols-2 gap-2 text-xs">
                 <div className="flex items-center">
-                  <span className="w-3 h-3 rounded-full bg-gray-100 mr-2"></span>
-                  <span>-2: 削除済み</span>
-                </div>
-                <div className="flex items-center">
                   <span className="w-3 h-3 rounded-full bg-yellow-100 mr-2"></span>
                   <span>-1: 無視してよい</span>
                 </div>
@@ -1273,7 +1003,6 @@ export default function Home() {
                           </span>
                         </div>
                       </th>
-                      {/* スマホではID列を非表示 */}
                       <th
                         className="px-3 md:px-6 py-2 md:py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-200 transition-colors group hidden md:table-cell"
                         onClick={() => handleSort("accountId")}
@@ -1333,13 +1062,29 @@ export default function Home() {
                           </span>
                         </div>
                       </th>
+                      {/* 削除済列（新規追加） */}
+                      <th
+                        className="px-3 md:px-6 py-2 md:py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-200 transition-colors group"
+                        onClick={() => handleSort("deleted")}
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="group-hover:text-blue-600">
+                            削除済
+                          </span>
+                          <span className="ml-1">{getSortIcon("deleted")}</span>
+                        </div>
+                      </th>
                     </tr>
                   </thead>
                   <tbody className="bg-white divide-y divide-gray-200">
                     {displayedAccounts.map((account, index) => (
                       <tr
                         key={`${account.key}-${index}-${page}`}
-                        className="hover:bg-gray-50 transition-colors"
+                        className={`transition-colors ${
+                          account.deleted
+                            ? "hover:bg-gray-400 bg-gray-300 text-gray-500" // 削除済み：グレー背景
+                            : "hover:bg-gray-50 "
+                        }`}
                       >
                         <td className="px-3 md:px-6 py-2 md:py-3 whitespace-nowrap">
                           <div className="font-medium text-gray-900 font-mono text-sm">
@@ -1350,12 +1095,16 @@ export default function Home() {
                           <div>
                             <button
                               onClick={() => handleOpenLink(account)}
-                              className="font-medium text-blue-600 hover:text-blue-800 hover:underline transition-colors text-left text-sm"
+                              className={`font-medium hover:underline transition-colors text-left text-sm ${
+                                account.deleted
+                                  ? "text-gray-400 hover:text-gray-600"
+                                  : "text-blue-600 hover:text-blue-800"
+                              }`}
                               title="TikTokで開く"
+                              disabled={account.deleted}
                             >
                               {account.accountName}
                             </button>
-                            {/* スマホのみ：アカウント名の下に小さくIDを表示 */}
                             <div className="md:hidden mt-1">
                               <div className="text-xs text-gray-500 font-mono truncate">
                                 {account.accountId}
@@ -1363,9 +1112,14 @@ export default function Home() {
                             </div>
                           </div>
                         </td>
-                        {/* スマホではID列を非表示 */}
                         <td className="px-3 md:px-6 py-2 md:py-3 whitespace-nowrap hidden md:table-cell">
-                          <div className="text-gray-700 font-mono text-sm">
+                          <div
+                            className={`font-mono text-sm ${
+                              account.deleted
+                                ? "text-gray-400"
+                                : "text-gray-700"
+                            }`}
+                          >
                             {account.accountId}
                           </div>
                         </td>
@@ -1382,7 +1136,10 @@ export default function Home() {
                               onClick={() => updateAmount(account.key, -1)}
                               className="w-6 h-6 md:w-8 md:h-8 flex items-center justify-center bg-red-100 text-red-600 rounded-full hover:bg-red-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                               aria-label="減らす"
-                              disabled={parseInt(account.amount) <= -2}
+                              disabled={
+                                parseInt(account.amount) <= -1 ||
+                                account.deleted
+                              }
                               title="減らす"
                             >
                               -
@@ -1391,7 +1148,7 @@ export default function Home() {
                               <span
                                 className={`font-semibold text-sm md:text-lg min-w-8 md:min-w-12 text-center px-2 py-1 rounded ${getAmountStyle(
                                   account.amount || "0"
-                                )}`}
+                                )} ${account.deleted ? "opacity-50" : ""}`}
                               >
                                 {account.amount || "0"}
                               </span>
@@ -1402,9 +1159,10 @@ export default function Home() {
                             </div>
                             <button
                               onClick={() => updateAmount(account.key, 1)}
-                              className="w-6 h-6 md:w-8 md:h-8 flex items-center justify-center bg-green-100 text-green-600 rounded-full hover:bg-green-200 transition-colors"
+                              className="w-6 h-6 md:w-8 md:h-8 flex items-center justify-center bg-green-100 text-green-600 rounded-full hover:bg-green-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                               aria-label="増やす"
                               title="増やす"
+                              disabled={account.deleted}
                             >
                               +
                             </button>
@@ -1414,15 +1172,20 @@ export default function Home() {
                           <button
                             onClick={() => toggleFavorite(account.key)}
                             className={`text-2xl transition-all hover:scale-110 ${
-                              account.favorite
+                              account.deleted
+                                ? "text-gray-300 cursor-not-allowed"
+                                : account.favorite
                                 ? "text-red-500 hover:text-red-700"
                                 : "text-gray-300 hover:text-red-400"
                             }`}
                             title={
-                              account.favorite
+                              account.deleted
+                                ? "削除済み"
+                                : account.favorite
                                 ? "お気に入りを解除"
                                 : "お気に入りに追加"
                             }
+                            disabled={account.deleted}
                           >
                             {account.favorite ? "♥" : "♡"}
                           </button>
@@ -1431,6 +1194,24 @@ export default function Home() {
                           <div className="text-gray-500 text-sm">
                             {formatDate(account.addedDate)}
                           </div>
+                        </td>
+                        {/* 削除済みセル（新規追加） */}
+                        <td className="px-3 md:px-6 py-2 md:py-3 whitespace-nowrap">
+                          <button
+                            onClick={() => toggleDeleted(account.key)}
+                            className={`text-lg transition-all hover:scale-110 ${
+                              account.deleted
+                                ? "text-red-500 hover:text-red-700"
+                                : "text-gray-300 hover:text-gray-500"
+                            }`}
+                            title={
+                              account.deleted
+                                ? "削除済みを解除"
+                                : "削除済みに設定"
+                            }
+                          >
+                            {account.deleted ? "🗑️" : "📁"}
+                          </button>
                         </td>
                       </tr>
                     ))}
@@ -1506,10 +1287,6 @@ export default function Home() {
             <div className="mt-6 md:mt-8 text-xs md:text-sm text-gray-500 space-y-2">
               <div className="hidden md:flex items-center gap-2">
                 <div className="flex items-center">
-                  <div className="w-3 h-3 bg-gray-100 rounded-full mr-2"></div>
-                  <span>-2: 削除済みアカウント</span>
-                </div>
-                <div className="flex items-center ml-4">
                   <div className="w-3 h-3 bg-yellow-100 rounded-full mr-2"></div>
                   <span>-1: 無視してよいアカウント</span>
                 </div>
@@ -1526,8 +1303,9 @@ export default function Home() {
                 <p>※ アカウント名をクリックするとTikTokのページが開きます</p>
                 <p>※ ヘッダーをクリックすると並び替えができます</p>
                 <p>※ TikTokリンクを開くと最終確認日が更新されます</p>
-                <p>※ Amountボタンで-2から調整可能（ホバーで意味表示）</p>
+                <p>※ Amountボタンで-1から調整可能（ホバーで意味表示）</p>
                 <p>※ ♡をクリックでお気に入りに追加/解除できます</p>
+                <p>※ 🗑️をクリックで削除済みに設定/解除できます</p>
               </div>
             </div>
           </>
@@ -1600,6 +1378,8 @@ function getSortFieldName(field: SortField): string {
       return "お気に入り";
     case "addedDate":
       return "追加日";
+    case "deleted":
+      return "削除済み";
     default:
       return field;
   }

@@ -1,11 +1,17 @@
 "use client";
 
 import { useEffect, useState, useCallback, useRef } from "react";
-import { ref, get, update, set } from "firebase/database";
+import { ref, get, update, set, remove } from "firebase/database";
 import { db } from "@/lib/firebase";
-import { TikTokAccount, SortField, SortOrder } from "@/types/tiktok";
+import {
+  TikTokAccount,
+  AccountList,
+  SortField,
+  SortOrder,
+} from "@/types/tiktok";
 import AddAccountModal from "@/components/AddAccountModal";
 import BulkAddModal from "@/components/BulkAddModal";
+import AccountTable from "@/components/AccountTable";
 
 // デバッグ用のログ関数
 const debugLog = (...args: any[]) => {
@@ -14,7 +20,7 @@ const debugLog = (...args: any[]) => {
   }
 };
 
-// Amountの意味を定義（-2を削除）
+// Amountの意味を定義
 const AMOUNT_MEANINGS = {
   "-1": "無視してよいアカウント",
   "0": "通常アカウント（未チェック）",
@@ -23,7 +29,21 @@ const AMOUNT_MEANINGS = {
   // ... それ以上は単純なカウント
 };
 
+// デフォルトのリスト設定
+const DEFAULT_LISTS: AccountList[] = [
+  {
+    id: "myfollow",
+    name: "マイフォロー",
+    description: "デフォルトのフォローリスト",
+    createdAt: new Date().toISOString(),
+    accountCount: 0,
+  },
+];
+
 export default function Home() {
+  const [currentListId, setCurrentListId] = useState<string>("myfollow");
+  const [accountLists, setAccountLists] =
+    useState<AccountList[]>(DEFAULT_LISTS);
   const [allAccounts, setAllAccounts] = useState<TikTokAccount[]>([]);
   const [filteredAccounts, setFilteredAccounts] = useState<TikTokAccount[]>([]);
   const [sortedAccounts, setSortedAccounts] = useState<TikTokAccount[]>([]);
@@ -31,6 +51,7 @@ export default function Home() {
     []
   );
   const [loading, setLoading] = useState(true);
+  const [loadingLists, setLoadingLists] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(true);
@@ -65,17 +86,16 @@ export default function Home() {
     enabled: false,
   });
 
-  // お気に入りフィルター状態
+  // フィルター状態
   const [showFavoritesOnly, setShowFavoritesOnly] = useState(false);
-
-  // 削除済フィルター状態（新規追加）
   const [showDeleted, setShowDeleted] = useState(true);
 
-  // アカウント追加モーダル状態
+  // モーダル状態
   const [showAddModal, setShowAddModal] = useState(false);
-
-  // 一括追加モーダル状態
   const [showBulkAddModal, setShowBulkAddModal] = useState(false);
+  const [showListManager, setShowListManager] = useState(false);
+  const [newListName, setNewListName] = useState("");
+  const [newListDescription, setNewListDescription] = useState("");
 
   const observerRef = useRef<IntersectionObserver | null>(null);
   const loadMoreRef = useRef<HTMLDivElement>(null);
@@ -84,18 +104,367 @@ export default function Home() {
   // Firebaseクエリの制限
   const PAGE_SIZE = 10;
 
+  // アカウントリストを取得
+  const fetchAccountLists = useCallback(async () => {
+    try {
+      setLoadingLists(true);
+      console.log("📋 リスト取得開始...");
+
+      const lists: AccountList[] = [];
+
+      // 1. まず _lists からメタデータを取得
+      const listsMetaRef = ref(db, "__collections__/_lists");
+      const metaSnapshot = await get(listsMetaRef);
+
+      if (metaSnapshot.exists()) {
+        const metaData = metaSnapshot.val();
+        console.log("📊 メタデータ取得完了:", Object.keys(metaData));
+
+        // 2. 各リストのメタデータを処理
+        for (const listId in metaData) {
+          console.log(`🔍 リスト処理中: ${listId}`, metaData[listId]);
+
+          try {
+            const meta = metaData[listId];
+            let accountCount = 0;
+
+            // 3. 実際のリストデータが存在するか確認
+            try {
+              const listDataRef = ref(db, `__collections__/${listId}`);
+              const listDataSnapshot = await get(listDataRef);
+
+              if (listDataSnapshot.exists()) {
+                const listData = listDataSnapshot.val();
+                accountCount = listData ? Object.keys(listData).length : 0;
+                console.log(
+                  `✅ ${listId} のアカウントデータあり: ${accountCount}件`
+                );
+              } else {
+                console.log(
+                  `⚠️ ${listId} のアカウントデータなし（空のリスト）`
+                );
+              }
+            } catch (dataError) {
+              console.log(
+                `⚠️ ${listId} のデータ取得エラー（空として扱う）:`,
+                dataError
+              );
+            }
+
+            // 4. リスト情報を作成
+            const accountList: AccountList = {
+              id: listId,
+              name: meta.name || listId,
+              description: meta.description || "",
+              createdAt: meta.createdAt || new Date().toISOString(),
+              accountCount: accountCount,
+            };
+
+            console.log(
+              `📝 リスト追加: ${listId} - ${accountList.name} (${accountCount}件)`
+            );
+            lists.push(accountList);
+          } catch (error) {
+            console.error(`❌ リスト ${listId} の処理中にエラー:`, error);
+          }
+        }
+      } else {
+        console.log("ℹ️ メタデータが存在しません");
+      }
+
+      // 5. myfollow がメタデータにない場合の処理
+      if (!lists.some((list) => list.id === "myfollow")) {
+        console.log("🔧 myfollow がメタデータにないので追加処理");
+
+        let myfollowAccountCount = 0;
+        try {
+          const myfollowDataRef = ref(db, "__collections__/myfollow");
+          const myfollowSnapshot = await get(myfollowDataRef);
+
+          if (myfollowSnapshot.exists()) {
+            const myfollowData = myfollowSnapshot.val();
+            myfollowAccountCount = myfollowData
+              ? Object.keys(myfollowData).length
+              : 0;
+          }
+        } catch (error) {
+          console.error("myfollow データ取得エラー:", error);
+        }
+
+        const myfollowList: AccountList = {
+          id: "myfollow",
+          name: "マイフォロー",
+          description: "デフォルトのフォローリスト",
+          createdAt: new Date().toISOString(),
+          accountCount: myfollowAccountCount,
+        };
+
+        lists.push(myfollowList);
+        console.log(`📝 myfollow リスト追加: ${myfollowAccountCount}件`);
+      }
+
+      console.log("📦 取得したリスト一覧:", lists);
+
+      // 6. リストが空の場合はデフォルトリストを作成
+      if (lists.length === 0) {
+        console.log("🆕 リストが空なのでデフォルトリストを作成");
+        await createDefaultList();
+        return fetchAccountLists(); // 再帰的に呼び出し
+      }
+
+      // 7. リストをソート（myfollowを先頭に）
+      const sortedLists = lists.sort((a, b) => {
+        if (a.id === "myfollow") return -1;
+        if (b.id === "myfollow") return 1;
+        return a.name.localeCompare(b.name, "ja");
+      });
+
+      console.log("🔠 ソート後のリスト:", sortedLists);
+
+      setAccountLists(sortedLists);
+
+      // 8. 現在のリストが存在しない場合は最初のリストを選択
+      if (
+        currentListId === "" ||
+        !sortedLists.some((list) => list.id === currentListId)
+      ) {
+        const firstListId = sortedLists[0].id;
+        console.log(`🔄 リスト切り替え: ${currentListId} -> ${firstListId}`);
+        setCurrentListId(firstListId);
+      } else {
+        console.log(`✅ 現在のリスト維持: ${currentListId}`);
+      }
+    } catch (error) {
+      console.error("❌ リスト取得エラー:", error);
+      // エラー時は最低限のリストを設定
+      const defaultList: AccountList = {
+        id: "myfollow",
+        name: "マイフォロー",
+        description: "デフォルトのフォローリスト",
+        createdAt: new Date().toISOString(),
+        accountCount: 0,
+      };
+      setAccountLists([defaultList]);
+      setCurrentListId("myfollow");
+    } finally {
+      setLoadingLists(false);
+    }
+  }, [currentListId]);
+
+  // デフォルトリストを作成する関数
+  const createDefaultList = async () => {
+    try {
+      // myfollow リストを作成
+      const myfollowRef = ref(db, "__collections__/myfollow");
+      await set(myfollowRef, {});
+
+      // メタデータを作成
+      const metaRef = ref(db, "__collections__/_lists/myfollow");
+      await set(metaRef, {
+        name: "マイフォロー",
+        description: "デフォルトのフォローリスト",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+
+      const defaultList: AccountList = {
+        id: "myfollow",
+        name: "マイフォロー",
+        description: "デフォルトのフォローリスト",
+        createdAt: new Date().toISOString(),
+        accountCount: 0,
+      };
+
+      setAccountLists([defaultList]);
+      setCurrentListId("myfollow");
+    } catch (error) {
+      console.error("デフォルトリスト作成エラー:", error);
+    }
+  };
+
+  // 新しいリストを作成（修正版）
+  const createNewList = async () => {
+    if (!newListName.trim()) {
+      alert("リスト名を入力してください");
+      return;
+    }
+
+    try {
+      // リストIDを生成（英数字とアンダースコアのみ）
+      const listId = newListName
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9_]/g, "_")
+        .replace(/_+/g, "_")
+        .replace(/^_+|_+$/g, "");
+
+      if (!listId) {
+        alert("有効なリスト名を入力してください");
+        return;
+      }
+
+      console.log(
+        `新しいリストを作成: ID=${listId}, Name=${newListName.trim()}`
+      );
+
+      // 1. リストデータを作成（空のオブジェクト）
+      const listRef = ref(db, `__collections__/${listId}`);
+      const existingList = await get(listRef);
+
+      if (existingList.exists()) {
+        alert("同じ名前のリストが既に存在します");
+        return;
+      }
+
+      await set(listRef, {});
+      console.log(`リスト ${listId} を作成しました`);
+
+      // 2. メタデータを作成
+      const listMetaRef = ref(db, `__collections__/_lists/${listId}`);
+      const listMetaData = {
+        name: newListName.trim(),
+        description: newListDescription.trim() || "",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+
+      await set(listMetaRef, listMetaData);
+      console.log(`リスト ${listId} のメタデータを作成しました:`, listMetaData);
+
+      // 3. 状態を更新
+      const newList: AccountList = {
+        id: listId,
+        name: newListName.trim(),
+        description: newListDescription.trim() || "",
+        createdAt: new Date().toISOString(),
+        accountCount: 0,
+      };
+
+      console.log("新しいリストを状態に追加:", newList);
+
+      setAccountLists((prev) => {
+        const newLists = [...prev, newList];
+        console.log("更新後のリスト一覧:", newLists);
+        return newLists;
+      });
+
+      // 4. 作成したリストに切り替え
+      console.log(`作成したリストに切り替え: ${listId}`);
+      setCurrentListId(listId);
+
+      // 5. フォームをリセットしてモーダルを閉じる
+      setNewListName("");
+      setNewListDescription("");
+      setShowListManager(false);
+
+      alert("リストを作成しました");
+    } catch (error) {
+      console.error("リスト作成エラー:", error);
+      alert(
+        `リストの作成に失敗しました: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    }
+  };
+
+  // リストを削除
+  const deleteList = async (listId: string) => {
+    if (
+      !confirm(
+        "このリストを削除しますか？リスト内のすべてのアカウントも削除されます。"
+      )
+    ) {
+      return;
+    }
+
+    try {
+      // リストデータを削除
+      const listRef = ref(db, `__collections__/${listId}`);
+      await remove(listRef);
+
+      // リストメタデータを削除
+      const listMetaRef = ref(db, `__collections__/_lists/${listId}`);
+      await remove(listMetaRef);
+
+      // 状態を更新
+      setAccountLists((prev) => prev.filter((list) => list.id !== listId));
+
+      // 現在のリストを削除した場合は別のリストに切り替え
+      if (listId === currentListId) {
+        const remainingLists = accountLists.filter(
+          (list) => list.id !== listId
+        );
+        if (remainingLists.length > 0) {
+          setCurrentListId(remainingLists[0].id);
+        } else {
+          // リストがなくなった場合はデフォルトリストを作成
+          const defaultListId = "myfollow";
+          await set(ref(db, `__collections__/${defaultListId}`), {});
+          await set(ref(db, `__collections__/_lists/${defaultListId}`), {
+            name: "マイフォロー",
+            description: "デフォルトリスト",
+            createdAt: new Date().toISOString(),
+          });
+          fetchAccountLists();
+          setCurrentListId(defaultListId);
+        }
+      }
+
+      alert("リストを削除しました");
+    } catch (error) {
+      console.error("リスト削除エラー:", error);
+      alert("リストの削除に失敗しました");
+    }
+  };
+
+  // リストを切り替え
+  const switchList = useCallback(
+    (listId: string) => {
+      console.log(`リスト切り替え要求: ${listId}`);
+      console.log(
+        `現在のリスト一覧:`,
+        accountLists.map((l) => l.id)
+      );
+
+      const targetList = accountLists.find((list) => list.id === listId);
+      if (targetList) {
+        setCurrentListId(listId);
+        setPage(1);
+        setSearchInput("");
+        setSearchQuery("");
+        setShowFavoritesOnly(false);
+        setDateFilterInput({
+          startDate: "",
+          endDate: "",
+          enabled: false,
+        });
+        setDateFilter({
+          startDate: "",
+          endDate: "",
+          enabled: false,
+        });
+        console.log(`リストを ${listId} に切り替えました`);
+      } else {
+        console.error(`リスト ${listId} が見つかりません`);
+      }
+    },
+    [accountLists]
+  );
   // 全データを取得
   const fetchAllData = useCallback(async () => {
+    if (!currentListId) return;
+
     try {
       setLoading(true);
       setError(null);
       setHasMore(true);
       setPage(1);
 
-      debugLog(`全データ取得開始`);
+      debugLog(`全データ取得開始: ${currentListId}`);
 
       // 全データを取得
-      const accountsRef = ref(db, "__collections__/myfollow");
+      const accountsRef = ref(db, `__collections__/${currentListId}`);
       const snapshot = await get(accountsRef);
 
       if (snapshot.exists()) {
@@ -115,7 +484,6 @@ export default function Home() {
               amount: account.Amount || account.amount || "",
               addedDate: account.AddedDate || account.addedDate || "",
               favorite: account.Favorite || account.favorite || false,
-              // 削除済みフラグを追加（既存データとの互換性のため、初期値はfalse）
               deleted: account.Deleted || account.deleted || false,
             });
           }
@@ -143,7 +511,7 @@ export default function Home() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [currentListId]);
 
   // 検索ボタン押下時の処理
   const handleSearchButtonClick = useCallback(() => {
@@ -161,7 +529,7 @@ export default function Home() {
 
     let filtered = [...allAccounts];
 
-    // 削除済みフィルター（新規追加）
+    // 削除済みフィルター
     if (!showDeleted) {
       filtered = filtered.filter((account) => !account.deleted);
     }
@@ -221,7 +589,7 @@ export default function Home() {
     searchType,
     dateFilter,
     showFavoritesOnly,
-    showDeleted, // 新規追加
+    showDeleted,
   ]);
 
   // ソートされたアカウントを計算
@@ -257,6 +625,15 @@ export default function Home() {
 
       // Favoriteの場合は真偽値として比較
       if (sortField === "favorite") {
+        if (sortOrder === "desc") {
+          return (valueA ? 1 : 0) - (valueB ? 1 : 0);
+        } else {
+          return (valueB ? 1 : 0) - (valueA ? 1 : 0);
+        }
+      }
+
+      // 削除済みの場合は真偽値として比較
+      if (sortField === "deleted") {
         if (sortOrder === "desc") {
           return (valueA ? 1 : 0) - (valueB ? 1 : 0);
         } else {
@@ -351,7 +728,7 @@ export default function Home() {
     }
   };
 
-  // Amountのスタイルを取得（-2を削除）
+  // Amountのスタイルを取得
   const getAmountStyle = (amount: string) => {
     const amountNum = parseInt(amount) || 0;
 
@@ -375,7 +752,10 @@ export default function Home() {
 
       const newFavorite = !account.favorite;
 
-      const accountRef = ref(db, `__collections__/myfollow/${accountKey}`);
+      const accountRef = ref(
+        db,
+        `__collections__/${currentListId}/${accountKey}`
+      );
       await update(accountRef, {
         Favorite: newFavorite,
       });
@@ -391,8 +771,7 @@ export default function Home() {
     }
   };
 
-  // 削除済み状態を切り替え（新規追加）
-  // 削除済み状態を切り替え（新規追加）- Amountは変更しない
+  // 削除済み状態を切り替え
   const toggleDeleted = async (accountKey: string) => {
     try {
       const account = allAccounts.find((acc) => acc.key === accountKey);
@@ -400,23 +779,21 @@ export default function Home() {
 
       const newDeleted = !account.deleted;
 
-      const accountRef = ref(db, `__collections__/myfollow/${accountKey}`);
+      const accountRef = ref(
+        db,
+        `__collections__/${currentListId}/${accountKey}`
+      );
       await update(accountRef, {
         Deleted: newDeleted,
-        // Amountは変更しない
       });
 
       setAllAccounts((prevAccounts) =>
         prevAccounts.map((acc) =>
-          acc.key === accountKey
-            ? {
-                ...acc,
-                deleted: newDeleted,
-                // Amountは変更しない
-              }
-            : acc
+          acc.key === accountKey ? { ...acc, deleted: newDeleted } : acc
         )
       );
+
+      // リストのアカウント数を更新（削除済み状態の変更によってもカウントは変わらない）
     } catch (error) {
       console.error("削除済み更新エラー:", error);
       alert("削除済み状態の更新に失敗しました。");
@@ -489,8 +866,19 @@ export default function Home() {
 
   // 初期データ読み込み
   useEffect(() => {
-    fetchAllData();
-  }, [fetchAllData]);
+    const initializeData = async () => {
+      await fetchAccountLists();
+      await fetchAllData();
+    };
+    initializeData();
+  }, [fetchAccountLists]);
+
+  // リストが変更されたときにデータを再取得
+  useEffect(() => {
+    if (currentListId) {
+      fetchAllData();
+    }
+  }, [currentListId, fetchAllData]);
 
   // 手動で次のページを読み込むボタンのハンドラー
   const handleManualLoadMore = () => {
@@ -507,7 +895,10 @@ export default function Home() {
       .padStart(2, "0")}/${today.getDate().toString().padStart(2, "0")}`;
 
     try {
-      const accountRef = ref(db, `__collections__/myfollow/${account.key}`);
+      const accountRef = ref(
+        db,
+        `__collections__/${currentListId}/${account.key}`
+      );
       await update(accountRef, {
         LastCheckedDate: formattedDate,
       });
@@ -534,7 +925,7 @@ export default function Home() {
       const currentAmount =
         account.amount && account.amount !== "" ? parseInt(account.amount) : 0;
 
-      // -1まで減らせるようにする（-2は削除）
+      // -1まで減らせるようにする
       const newAmount = Math.max(-1, currentAmount + delta);
 
       const today = new Date();
@@ -542,7 +933,10 @@ export default function Home() {
         .toString()
         .padStart(2, "0")}/${today.getDate().toString().padStart(2, "0")}`;
 
-      const accountRef = ref(db, `__collections__/myfollow/${accountKey}`);
+      const accountRef = ref(
+        db,
+        `__collections__/${currentListId}/${accountKey}`
+      );
 
       await update(accountRef, {
         Amount: newAmount.toString(),
@@ -618,16 +1012,38 @@ export default function Home() {
   };
 
   // アカウント追加時のハンドラー
-  const handleAccountAdded = useCallback((newAccount: TikTokAccount) => {
-    setAllAccounts((prev) => [...prev, newAccount]);
-  }, []);
+  const handleAccountAdded = useCallback(
+    (newAccount: TikTokAccount) => {
+      setAllAccounts((prev) => [...prev, newAccount]);
+      // リストのアカウント数を更新
+      setAccountLists((prev) =>
+        prev.map((list) =>
+          list.id === currentListId
+            ? { ...list, accountCount: list.accountCount + 1 }
+            : list
+        )
+      );
+    },
+    [currentListId]
+  );
 
   // 一括アカウント追加時のハンドラー
-  const handleAccountsAdded = useCallback((newAccounts: TikTokAccount[]) => {
-    setAllAccounts((prev) => [...prev, ...newAccounts]);
-  }, []);
+  const handleAccountsAdded = useCallback(
+    (newAccounts: TikTokAccount[]) => {
+      setAllAccounts((prev) => [...prev, ...newAccounts]);
+      // リストのアカウント数を更新
+      setAccountLists((prev) =>
+        prev.map((list) =>
+          list.id === currentListId
+            ? { ...list, accountCount: list.accountCount + newAccounts.length }
+            : list
+        )
+      );
+    },
+    [currentListId]
+  );
 
-  if (loading) {
+  if (loading || loadingLists) {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <div className="flex flex-col items-center">
@@ -640,14 +1056,69 @@ export default function Home() {
 
   const totalPages = Math.ceil(sortedAccounts.length / PAGE_SIZE);
   const currentPage = Math.min(page, totalPages);
+  const currentList = accountLists.find((list) => list.id === currentListId);
 
   return (
     <div className="min-h-screen bg-gray-50 p-3 md:p-8" ref={containerRef}>
       <div className="max-w-7xl mx-auto">
         <header className="mb-6 md:mb-8">
-          <h1 className="text-2xl md:text-3xl font-bold text-gray-800">
-            TikTokアカウント管理
-          </h1>
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-4">
+            <h1 className="text-2xl md:text-3xl font-bold text-gray-800">
+              TikTokアカウント管理
+              {currentList && (
+                <span className="ml-2 text-lg md:text-xl text-blue-600">
+                  - {currentList.name}
+                </span>
+              )}
+            </h1>
+
+            {/* リスト選択ドロップダウン */}
+            <div className="flex items-center space-x-2">
+              <div className="relative">
+                <select
+                  value={currentListId}
+                  onChange={(e) => switchList(e.target.value)}
+                  className="appearance-none bg-white border border-gray-300 rounded-lg px-4 py-2 pr-8 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
+                >
+                  {accountLists.map((list) => (
+                    <option key={list.id} value={list.id}>
+                      {list.name} ({list.accountCount}件)
+                    </option>
+                  ))}
+                </select>
+                <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-gray-700">
+                  <svg
+                    className="fill-current h-4 w-4"
+                    xmlns="http://www.w3.org/2000/svg"
+                    viewBox="0 0 20 20"
+                  >
+                    <path d="M9.293 12.95l.707.707L15.657 8l-1.414-1.414L10 10.828 5.757 6.586 4.343 8z" />
+                  </svg>
+                </div>
+              </div>
+
+              <button
+                onClick={() => setShowListManager(true)}
+                className="px-3 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors flex items-center text-sm"
+              >
+                <svg
+                  className="w-4 h-4 mr-1"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M12 4v16m8-8H4"
+                  />
+                </svg>
+                リスト追加
+              </button>
+            </div>
+          </div>
+
           <div className="mt-2 flex flex-wrap items-center gap-2 md:gap-4">
             <p className="text-sm md:text-base text-gray-600">
               全{sortedAccounts.length}件のアカウント（
@@ -748,7 +1219,7 @@ export default function Home() {
                   </>
                 )}
               </button>
-              {/* 削除済み表示/非表示ボタン（新規追加） */}
+              {/* 削除済み表示/非表示ボタン */}
               <button
                 onClick={() => setShowDeleted(!showDeleted)}
                 className={`text-xs md:text-sm px-2 md:px-3 py-1 rounded-full transition-colors flex items-center ${
@@ -810,6 +1281,42 @@ export default function Home() {
             </div>
           )}
         </header>
+
+        {/* リスト情報表示 */}
+        {currentList && (
+          <div className="mb-4 p-3 md:p-4 bg-blue-50 border border-blue-200 rounded-lg">
+            <div className="flex flex-col md:flex-row md:items-center justify-between">
+              <div>
+                <h3 className="font-medium text-blue-800">
+                  {currentList.name}
+                </h3>
+                {currentList.description && (
+                  <p className="text-sm text-blue-600 mt-1">
+                    {currentList.description}
+                  </p>
+                )}
+                <p className="text-xs text-blue-500 mt-1">
+                  作成日: {formatDate(currentList.createdAt)} • アカウント数:{" "}
+                  {currentList.accountCount}件
+                </p>
+              </div>
+              <div className="flex space-x-2 mt-2 md:mt-0">
+                <button
+                  onClick={() => {
+                    if (currentList.id !== "myfollow") {
+                      deleteList(currentList.id);
+                    } else {
+                      alert("デフォルトリストは削除できません");
+                    }
+                  }}
+                  className="px-3 py-1 bg-red-100 text-red-700 rounded hover:bg-red-200 transition-colors text-sm"
+                >
+                  リスト削除
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* 検索とフィルターセクション */}
         <div className="mb-4 md:mb-6 bg-white rounded-lg md:rounded-xl shadow-md p-3 md:p-6">
@@ -953,393 +1460,27 @@ export default function Home() {
           )}
         </div>
 
-        {displayedAccounts.length > 0 ? (
-          <>
-            {/* Amountの意味説明（モバイル用） */}
-            <div className="mb-3 md:hidden bg-white rounded-lg shadow p-3">
-              <h3 className="text-sm font-medium text-gray-700 mb-2">
-                Amountの意味:
-              </h3>
-              <div className="grid grid-cols-2 gap-2 text-xs">
-                <div className="flex items-center">
-                  <span className="w-3 h-3 rounded-full bg-yellow-100 mr-2"></span>
-                  <span>-1: 無視してよい</span>
-                </div>
-                <div className="flex items-center">
-                  <span className="w-3 h-3 rounded-full bg-blue-100 mr-2"></span>
-                  <span>0: 未チェック</span>
-                </div>
-                <div className="flex items-center">
-                  <span className="w-3 h-3 rounded-full bg-green-100 mr-2"></span>
-                  <span>1+: チェック済み</span>
-                </div>
-              </div>
-            </div>
-
-            <div className="bg-white rounded-lg md:rounded-xl shadow-md overflow-hidden">
-              <div className="overflow-x-auto">
-                <table className="min-w-full divide-y divide-gray-200">
-                  <thead className="bg-gray-100">
-                    <tr>
-                      <th
-                        className="px-3 md:px-6 py-2 md:py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-200 transition-colors group"
-                        onClick={() => handleSort("key")}
-                      >
-                        <div className="flex items-center justify-between">
-                          <span className="group-hover:text-blue-600">#</span>
-                          <span className="ml-1">{getSortIcon("key")}</span>
-                        </div>
-                      </th>
-                      <th
-                        className="px-3 md:px-6 py-2 md:py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-200 transition-colors group"
-                        onClick={() => handleSort("accountName")}
-                      >
-                        <div className="flex items-center justify-between">
-                          <span className="group-hover:text-blue-600">
-                            アカウント
-                          </span>
-                          <span className="ml-1">
-                            {getSortIcon("accountName")}
-                          </span>
-                        </div>
-                      </th>
-                      <th
-                        className="px-3 md:px-6 py-2 md:py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-200 transition-colors group hidden md:table-cell"
-                        onClick={() => handleSort("accountId")}
-                      >
-                        <div className="flex items-center justify-between">
-                          <span className="group-hover:text-blue-600">ID</span>
-                          <span className="ml-1">
-                            {getSortIcon("accountId")}
-                          </span>
-                        </div>
-                      </th>
-                      <th
-                        className="px-3 md:px-6 py-2 md:py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-200 transition-colors group"
-                        onClick={() => handleSort("lastCheckedDate")}
-                      >
-                        <div className="flex items-center justify-between">
-                          <span className="group-hover:text-blue-600">
-                            最終確認
-                          </span>
-                          <span className="ml-1">
-                            {getSortIcon("lastCheckedDate")}
-                          </span>
-                        </div>
-                      </th>
-                      <th
-                        className="px-3 md:px-6 py-2 md:py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-200 transition-colors group"
-                        onClick={() => handleSort("amount")}
-                      >
-                        <div className="flex items-center justify-between">
-                          <span className="group-hover:text-blue-600">
-                            Amount
-                          </span>
-                          <span className="ml-1">{getSortIcon("amount")}</span>
-                        </div>
-                      </th>
-                      <th
-                        className="px-3 md:px-6 py-2 md:py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-200 transition-colors group"
-                        onClick={() => handleSort("favorite")}
-                      >
-                        <div className="flex items-center justify-between">
-                          <span className="group-hover:text-blue-600">♡</span>
-                          <span className="ml-1">
-                            {getSortIcon("favorite")}
-                          </span>
-                        </div>
-                      </th>
-                      <th
-                        className="px-3 md:px-6 py-2 md:py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-200 transition-colors group"
-                        onClick={() => handleSort("addedDate")}
-                      >
-                        <div className="flex items-center justify-between">
-                          <span className="group-hover:text-blue-600">
-                            追加日
-                          </span>
-                          <span className="ml-1">
-                            {getSortIcon("addedDate")}
-                          </span>
-                        </div>
-                      </th>
-                      {/* 削除済列（新規追加） */}
-                      <th
-                        className="px-3 md:px-6 py-2 md:py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-200 transition-colors group"
-                        onClick={() => handleSort("deleted")}
-                      >
-                        <div className="flex items-center justify-between">
-                          <span className="group-hover:text-blue-600">
-                            削除済
-                          </span>
-                          <span className="ml-1">{getSortIcon("deleted")}</span>
-                        </div>
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody className="bg-white divide-y divide-gray-200">
-                    {displayedAccounts.map((account, index) => (
-                      <tr
-                        key={`${account.key}-${index}-${page}`}
-                        className={`transition-colors ${
-                          account.deleted
-                            ? "hover:bg-gray-400 bg-gray-300 text-gray-500" // 削除済み：グレー背景
-                            : "hover:bg-gray-50 "
-                        }`}
-                      >
-                        <td className="px-3 md:px-6 py-2 md:py-3 whitespace-nowrap">
-                          <div className="font-medium text-gray-900 font-mono text-sm">
-                            {account.key}
-                          </div>
-                        </td>
-                        <td className="px-3 md:px-6 py-2 md:py-3">
-                          <div>
-                            <button
-                              onClick={() => handleOpenLink(account)}
-                              className={`font-medium hover:underline transition-colors text-left text-sm ${
-                                account.deleted
-                                  ? "text-gray-400 hover:text-gray-600"
-                                  : "text-blue-600 hover:text-blue-800"
-                              }`}
-                              title="TikTokで開く"
-                              disabled={account.deleted}
-                            >
-                              {account.accountName}
-                            </button>
-                            <div className="md:hidden mt-1">
-                              <div className="text-xs text-gray-500 font-mono truncate">
-                                {account.accountId}
-                              </div>
-                            </div>
-                          </div>
-                        </td>
-                        <td className="px-3 md:px-6 py-2 md:py-3 whitespace-nowrap hidden md:table-cell">
-                          <div
-                            className={`font-mono text-sm ${
-                              account.deleted
-                                ? "text-gray-400"
-                                : "text-gray-700"
-                            }`}
-                          >
-                            {account.accountId}
-                          </div>
-                        </td>
-                        <td
-                          className={getDateCellStyle(account.lastCheckedDate)}
-                        >
-                          <div className="text-gray-700 text-sm">
-                            {formatDate(account.lastCheckedDate)}
-                          </div>
-                        </td>
-                        <td className="px-3 md:px-6 py-2 md:py-3 whitespace-nowrap">
-                          <div className="flex items-center space-x-1 md:space-x-3">
-                            <button
-                              onClick={() => updateAmount(account.key, -1)}
-                              className="w-6 h-6 md:w-8 md:h-8 flex items-center justify-center bg-red-100 text-red-600 rounded-full hover:bg-red-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                              aria-label="減らす"
-                              disabled={
-                                parseInt(account.amount) <= -1 ||
-                                account.deleted
-                              }
-                              title="減らす"
-                            >
-                              -
-                            </button>
-                            <div className="relative group">
-                              <span
-                                className={`font-semibold text-sm md:text-lg min-w-8 md:min-w-12 text-center px-2 py-1 rounded ${getAmountStyle(
-                                  account.amount || "0"
-                                )} ${account.deleted ? "opacity-50" : ""}`}
-                              >
-                                {account.amount || "0"}
-                              </span>
-                              <div className="absolute z-10 invisible group-hover:visible bottom-full left-1/2 transform -translate-x-1/2 mb-2 px-2 py-1 bg-gray-800 text-white text-xs rounded whitespace-nowrap">
-                                {getAmountMeaning(account.amount || "0")}
-                                <div className="absolute top-full left-1/2 transform -translate-x-1/2 border-4 border-transparent border-t-gray-800"></div>
-                              </div>
-                            </div>
-                            <button
-                              onClick={() => updateAmount(account.key, 1)}
-                              className="w-6 h-6 md:w-8 md:h-8 flex items-center justify-center bg-green-100 text-green-600 rounded-full hover:bg-green-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                              aria-label="増やす"
-                              title="増やす"
-                              disabled={account.deleted}
-                            >
-                              +
-                            </button>
-                          </div>
-                        </td>
-                        <td className="px-3 md:px-6 py-2 md:py-3 whitespace-nowrap">
-                          <button
-                            onClick={() => toggleFavorite(account.key)}
-                            className={`text-2xl transition-all hover:scale-110 ${
-                              account.deleted
-                                ? "text-gray-300 cursor-not-allowed"
-                                : account.favorite
-                                ? "text-red-500 hover:text-red-700"
-                                : "text-gray-300 hover:text-red-400"
-                            }`}
-                            title={
-                              account.deleted
-                                ? "削除済み"
-                                : account.favorite
-                                ? "お気に入りを解除"
-                                : "お気に入りに追加"
-                            }
-                            disabled={account.deleted}
-                          >
-                            {account.favorite ? "♥" : "♡"}
-                          </button>
-                        </td>
-                        <td className="px-3 md:px-6 py-2 md:py-3 whitespace-nowrap">
-                          <div className="text-gray-500 text-sm">
-                            {formatDate(account.addedDate)}
-                          </div>
-                        </td>
-                        {/* 削除済みセル（新規追加） */}
-                        <td className="px-3 md:px-6 py-2 md:py-3 whitespace-nowrap">
-                          <button
-                            onClick={() => toggleDeleted(account.key)}
-                            className={`text-lg transition-all hover:scale-110 ${
-                              account.deleted
-                                ? "text-red-500 hover:text-red-700"
-                                : "text-gray-300 hover:text-gray-500"
-                            }`}
-                            title={
-                              account.deleted
-                                ? "削除済みを解除"
-                                : "削除済みに設定"
-                            }
-                          >
-                            {account.deleted ? "🗑️" : "📁"}
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-
-            {/* 読み込み中の表示 */}
-            {loadingMore && (
-              <div className="mt-4 md:mt-6 text-center">
-                <div className="inline-flex items-center justify-center space-x-2 md:space-x-3">
-                  <div className="animate-spin rounded-full h-6 w-6 md:h-8 md:w-8 border-b-2 border-blue-600"></div>
-                  <div className="text-sm md:text-base text-gray-600">
-                    読み込み中...
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* スクロール用のトリガー要素 */}
-            {hasMore && !loadingMore && (
-              <div className="mt-4 md:mt-6 space-y-3 md:space-y-4">
-                <div
-                  ref={loadMoreRef}
-                  className="h-12 md:h-20 flex items-center justify-center"
-                >
-                  <div className="text-center">
-                    <div className="animate-bounce text-xl md:text-2xl text-blue-500">
-                      ↓
-                    </div>
-                    <p className="mt-1 md:mt-2 text-xs md:text-sm text-gray-500">
-                      スクロールしてさらに読み込む
-                    </p>
-                  </div>
-                </div>
-                <div className="text-center">
-                  <button
-                    onClick={handleManualLoadMore}
-                    className="px-3 md:px-4 py-1 md:py-2 bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200 transition-colors text-xs md:text-sm"
-                  >
-                    クリックして次の10件を読み込む
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {/* 全件表示完了のメッセージ */}
-            {!hasMore && displayedAccounts.length > 0 && (
-              <div className="mt-4 md:mt-6 text-center">
-                <div className="inline-flex items-center px-3 md:px-4 py-1 md:py-2 bg-green-50 text-green-700 rounded-full">
-                  <svg
-                    className="w-4 h-4 md:w-5 md:h-5 mr-1 md:mr-2"
-                    fill="currentColor"
-                    viewBox="0 0 20 20"
-                  >
-                    <path
-                      fillRule="evenodd"
-                      d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
-                      clipRule="evenodd"
-                    />
-                  </svg>
-                  <span className="text-sm md:text-base font-medium">
-                    すべてのデータを表示しました
-                  </span>
-                  <span className="ml-1 md:ml-2 text-xs md:text-sm">
-                    （全{sortedAccounts.length}件）
-                  </span>
-                </div>
-              </div>
-            )}
-
-            <div className="mt-6 md:mt-8 text-xs md:text-sm text-gray-500 space-y-2">
-              <div className="hidden md:flex items-center gap-2">
-                <div className="flex items-center">
-                  <div className="w-3 h-3 bg-yellow-100 rounded-full mr-2"></div>
-                  <span>-1: 無視してよいアカウント</span>
-                </div>
-                <div className="flex items-center ml-4">
-                  <div className="w-3 h-3 bg-blue-100 rounded-full mr-2"></div>
-                  <span>0: 通常アカウント（未チェック）</span>
-                </div>
-                <div className="flex items-center ml-4">
-                  <div className="w-3 h-3 bg-green-100 rounded-full mr-2"></div>
-                  <span>1+: チェック済み</span>
-                </div>
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-1 md:gap-2">
-                <p>※ アカウント名をクリックするとTikTokのページが開きます</p>
-                <p>※ ヘッダーをクリックすると並び替えができます</p>
-                <p>※ TikTokリンクを開くと最終確認日が更新されます</p>
-                <p>※ Amountボタンで-1から調整可能（ホバーで意味表示）</p>
-                <p>※ ♡をクリックでお気に入りに追加/解除できます</p>
-                <p>※ 🗑️をクリックで削除済みに設定/解除できます</p>
-              </div>
-            </div>
-          </>
-        ) : (
-          <div className="bg-white rounded-lg md:rounded-xl shadow-md p-6 md:p-8 text-center">
-            <div className="text-3xl md:text-4xl mb-3 md:mb-4">📱</div>
-            <p className="text-base md:text-lg text-gray-600 mb-2">
-              {searchQuery || dateFilter.enabled || showFavoritesOnly
-                ? "検索条件に一致するデータがありません"
-                : "データが見つかりませんでした"}
-            </p>
-            <p className="text-xs md:text-sm text-gray-500 mb-4 md:mb-6">
-              {searchQuery || dateFilter.enabled || showFavoritesOnly
-                ? "検索条件を変更するか、フィルターをリセットしてください"
-                : "Firebaseにデータが存在するか確認してください"}
-            </p>
-            <div className="space-x-2 md:space-x-4">
-              <button
-                onClick={fetchAllData}
-                className="px-4 md:px-6 py-2 md:py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium text-sm md:text-base"
-              >
-                データを読み込む
-              </button>
-              {(searchQuery || dateFilter.enabled || showFavoritesOnly) && (
-                <button
-                  onClick={resetFilters}
-                  className="px-4 md:px-6 py-2 md:py-3 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors font-medium text-sm md:text-base"
-                >
-                  フィルターをリセット
-                </button>
-              )}
-            </div>
-          </div>
-        )}
+        {/* アカウントテーブル */}
+        <AccountTable
+          accounts={displayedAccounts}
+          loadingMore={loadingMore}
+          hasMore={hasMore}
+          sortField={sortField}
+          sortOrder={sortOrder}
+          onSort={handleSort}
+          onOpenLink={handleOpenLink}
+          onUpdateAmount={updateAmount}
+          onToggleFavorite={toggleFavorite}
+          onToggleDeleted={toggleDeleted}
+          getAmountMeaning={getAmountMeaning}
+          getAmountStyle={getAmountStyle}
+          formatDate={formatDate}
+          getDateCellStyle={getDateCellStyle}
+          getSortIcon={getSortIcon}
+          onManualLoadMore={handleManualLoadMore}
+          loadMoreRef={loadMoreRef}
+          showDeleted={showDeleted}
+        />
       </div>
 
       {/* アカウント追加モーダル */}
@@ -1348,6 +1489,7 @@ export default function Home() {
         onClose={() => setShowAddModal(false)}
         onAccountAdded={handleAccountAdded}
         allAccounts={allAccounts}
+        currentListId={currentListId}
       />
 
       {/* 一括追加モーダル */}
@@ -1356,7 +1498,129 @@ export default function Home() {
         onClose={() => setShowBulkAddModal(false)}
         onAccountsAdded={handleAccountsAdded}
         allAccounts={allAccounts}
+        currentListId={currentListId}
       />
+
+      {/* リスト管理モーダル */}
+      {showListManager && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-xl max-w-md w-full max-h-[90vh] overflow-y-auto">
+            <div className="p-6">
+              <h3 className="text-xl font-bold text-gray-800 mb-4">
+                リスト管理
+              </h3>
+
+              {/* 新しいリスト作成フォーム */}
+              <div className="space-y-4 mb-6">
+                <h4 className="text-lg font-medium text-gray-700">
+                  新しいリストを作成
+                </h4>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    リスト名 *
+                  </label>
+                  <input
+                    type="text"
+                    value={newListName}
+                    onChange={(e) => setNewListName(e.target.value)}
+                    placeholder="例: フォローリスト1"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    説明（オプション）
+                  </label>
+                  <textarea
+                    value={newListDescription}
+                    onChange={(e) => setNewListDescription(e.target.value)}
+                    placeholder="このリストの説明を入力"
+                    rows={3}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  />
+                </div>
+
+                <button
+                  onClick={createNewList}
+                  disabled={!newListName.trim()}
+                  className="w-full px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  リストを作成
+                </button>
+              </div>
+
+              {/* 既存のリスト一覧 */}
+              <div>
+                <h4 className="text-lg font-medium text-gray-700 mb-3">
+                  既存のリスト ({accountLists.length})
+                </h4>
+                <div className="space-y-2 max-h-60 overflow-y-auto">
+                  {accountLists.map((list) => (
+                    <div
+                      key={list.id}
+                      className={`p-3 border rounded-lg flex justify-between items-center ${
+                        list.id === currentListId
+                          ? "border-blue-500 bg-blue-50"
+                          : "border-gray-200"
+                      }`}
+                    >
+                      <div className="flex-1">
+                        <div className="font-medium text-gray-800 flex items-center">
+                          {list.name}
+                          {list.id === currentListId && (
+                            <span className="ml-2 text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded">
+                              現在選択中
+                            </span>
+                          )}
+                        </div>
+                        {list.description && (
+                          <div className="text-sm text-gray-600 mt-1">
+                            {list.description}
+                          </div>
+                        )}
+                        <div className="text-xs text-gray-500 mt-1">
+                          アカウント数: {list.accountCount}件 • 作成日:{" "}
+                          {formatDate(list.createdAt)}
+                        </div>
+                      </div>
+                      <div className="flex space-x-2">
+                        <button
+                          onClick={() => switchList(list.id)}
+                          className="px-3 py-1 bg-blue-100 text-blue-700 rounded hover:bg-blue-200 text-sm"
+                        >
+                          選択
+                        </button>
+                        {list.id !== "myfollow" && (
+                          <button
+                            onClick={() => deleteList(list.id)}
+                            className="px-3 py-1 bg-red-100 text-red-700 rounded hover:bg-red-200 text-sm"
+                          >
+                            削除
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="flex justify-end space-x-3 mt-6">
+                <button
+                  onClick={() => {
+                    setShowListManager(false);
+                    setNewListName("");
+                    setNewListDescription("");
+                  }}
+                  className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50"
+                >
+                  閉じる
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -19,6 +19,7 @@ interface AccountTableProps {
   onOpenLink: (account: TikTokAccount) => void;
   onUpdateAmount: (accountKey: string, delta: number) => void;
   onToggleFavorite: (accountKey: string) => void;
+  onToggleDeleted: (accountKey: string) => void; // 削除済み切り替え追加
   getAmountMeaning: (amount: string) => string;
   getAmountStyle: (amount: string) => string;
   formatDate: (dateString: string) => string;
@@ -26,6 +27,7 @@ interface AccountTableProps {
   getSortIcon: (field: SortField) => string;
   onManualLoadMore?: () => void;
   loadMoreRef?: React.RefObject<HTMLDivElement | null>;
+  showDeleted: boolean; // 削除済み表示状態追加
 }
 
 export default function AccountTable({
@@ -38,6 +40,7 @@ export default function AccountTable({
   onOpenLink,
   onUpdateAmount,
   onToggleFavorite,
+  onToggleDeleted, // 削除済み切り替え追加
   getAmountMeaning,
   getAmountStyle,
   formatDate,
@@ -45,6 +48,7 @@ export default function AccountTable({
   getSortIcon,
   onManualLoadMore,
   loadMoreRef,
+  showDeleted, // 削除済み表示状態追加
 }: AccountTableProps) {
   if (accounts.length === 0) {
     return (
@@ -68,10 +72,6 @@ export default function AccountTable({
           Amountの意味:
         </h3>
         <div className="grid grid-cols-2 gap-2 text-xs">
-          <div className="flex items-center">
-            <span className="w-3 h-3 rounded-full bg-gray-100 mr-2"></span>
-            <span>-2: 削除済み</span>
-          </div>
           <div className="flex items-center">
             <span className="w-3 h-3 rounded-full bg-yellow-100 mr-2"></span>
             <span>-1: 無視してよい</span>
@@ -160,13 +160,27 @@ export default function AccountTable({
                     <span className="ml-1">{getSortIcon("addedDate")}</span>
                   </div>
                 </th>
+                {/* 削除済列追加 */}
+                <th
+                  className="px-3 md:px-6 py-2 md:py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-200 transition-colors group"
+                  onClick={() => onSort("deleted")}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="group-hover:text-blue-600">削除済</span>
+                    <span className="ml-1">{getSortIcon("deleted")}</span>
+                  </div>
+                </th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
               {accounts.map((account, index) => (
                 <tr
                   key={`${account.key}-${index}`}
-                  className="hover:bg-gray-50 transition-colors"
+                  className={`transition-colors ${
+                    account.deleted
+                      ? "hover:bg-gray-400 bg-gray-300 text-gray-500" // 削除済み：グレー背景
+                      : "hover:bg-gray-50 "
+                  }`}
                 >
                   <td className="px-3 md:px-6 py-2 md:py-3 whitespace-nowrap">
                     <div className="font-medium text-gray-900 font-mono text-sm">
@@ -177,8 +191,13 @@ export default function AccountTable({
                     <div>
                       <button
                         onClick={() => onOpenLink(account)}
-                        className="font-medium text-blue-600 hover:text-blue-800 hover:underline transition-colors text-left text-sm"
+                        className={`font-medium hover:underline transition-colors text-left text-sm ${
+                          account.deleted
+                            ? "text-gray-400 hover:text-gray-600"
+                            : "text-blue-600 hover:text-blue-800"
+                        }`}
                         title="TikTokで開く"
+                        disabled={account.deleted}
                       >
                         {account.accountName}
                       </button>
@@ -192,7 +211,11 @@ export default function AccountTable({
                   </td>
                   {/* スマホではID列を非表示 */}
                   <td className="px-3 md:px-6 py-2 md:py-3 whitespace-nowrap hidden md:table-cell">
-                    <div className="text-gray-700 font-mono text-sm">
+                    <div
+                      className={`font-mono text-sm ${
+                        account.deleted ? "text-gray-400" : "text-gray-700"
+                      }`}
+                    >
                       {account.accountId}
                     </div>
                   </td>
@@ -207,7 +230,9 @@ export default function AccountTable({
                         onClick={() => onUpdateAmount(account.key, -1)}
                         className="w-6 h-6 md:w-8 md:h-8 flex items-center justify-center bg-red-100 text-red-600 rounded-full hover:bg-red-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                         aria-label="減らす"
-                        disabled={parseInt(account.amount) <= -2}
+                        disabled={
+                          parseInt(account.amount) <= -1 || account.deleted
+                        }
                         title="減らす"
                       >
                         -
@@ -216,7 +241,7 @@ export default function AccountTable({
                         <span
                           className={`font-semibold text-sm md:text-lg min-w-8 md:min-w-12 text-center px-2 py-1 rounded ${getAmountStyle(
                             account.amount || "0"
-                          )}`}
+                          )} ${account.deleted ? "opacity-50" : ""}`}
                         >
                           {account.amount || "0"}
                         </span>
@@ -227,9 +252,10 @@ export default function AccountTable({
                       </div>
                       <button
                         onClick={() => onUpdateAmount(account.key, 1)}
-                        className="w-6 h-6 md:w-8 md:h-8 flex items-center justify-center bg-green-100 text-green-600 rounded-full hover:bg-green-200 transition-colors"
+                        className="w-6 h-6 md:w-8 md:h-8 flex items-center justify-center bg-green-100 text-green-600 rounded-full hover:bg-green-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                         aria-label="増やす"
                         title="増やす"
+                        disabled={account.deleted}
                       >
                         +
                       </button>
@@ -239,15 +265,20 @@ export default function AccountTable({
                     <button
                       onClick={() => onToggleFavorite(account.key)}
                       className={`text-2xl transition-all hover:scale-110 ${
-                        account.favorite
+                        account.deleted
+                          ? "text-gray-300 cursor-not-allowed"
+                          : account.favorite
                           ? "text-red-500 hover:text-red-700"
                           : "text-gray-300 hover:text-red-400"
                       }`}
                       title={
-                        account.favorite
+                        account.deleted
+                          ? "削除済み"
+                          : account.favorite
                           ? "お気に入りを解除"
                           : "お気に入りに追加"
                       }
+                      disabled={account.deleted}
                     >
                       {account.favorite ? "♥" : "♡"}
                     </button>
@@ -256,6 +287,22 @@ export default function AccountTable({
                     <div className="text-gray-500 text-sm">
                       {formatDate(account.addedDate)}
                     </div>
+                  </td>
+                  {/* 削除済みセル追加 */}
+                  <td className="px-3 md:px-6 py-2 md:py-3 whitespace-nowrap">
+                    <button
+                      onClick={() => onToggleDeleted(account.key)}
+                      className={`text-lg transition-all hover:scale-110 ${
+                        account.deleted
+                          ? "text-red-500 hover:text-red-700"
+                          : "text-gray-300 hover:text-gray-500"
+                      }`}
+                      title={
+                        account.deleted ? "削除済みを解除" : "削除済みに設定"
+                      }
+                    >
+                      {account.deleted ? "🗑️" : "📁"}
+                    </button>
                   </td>
                 </tr>
               ))}
@@ -330,10 +377,6 @@ export default function AccountTable({
       <div className="mt-6 md:mt-8 text-xs md:text-sm text-gray-500 space-y-2">
         <div className="hidden md:flex items-center gap-2">
           <div className="flex items-center">
-            <div className="w-3 h-3 bg-gray-100 rounded-full mr-2"></div>
-            <span>-2: 削除済みアカウント</span>
-          </div>
-          <div className="flex items-center ml-4">
             <div className="w-3 h-3 bg-yellow-100 rounded-full mr-2"></div>
             <span>-1: 無視してよいアカウント</span>
           </div>
@@ -350,8 +393,9 @@ export default function AccountTable({
           <p>※ アカウント名をクリックするとTikTokのページが開きます</p>
           <p>※ ヘッダーをクリックすると並び替えができます</p>
           <p>※ TikTokリンクを開くと最終確認日が更新されます</p>
-          <p>※ Amountボタンで-2から調整可能（ホバーで意味表示）</p>
+          <p>※ Amountボタンで-1から調整可能（ホバーで意味表示）</p>
           <p>※ ♡をクリックでお気に入りに追加/解除できます</p>
+          <p>※ 🗑️をクリックで削除済みに設定/解除できます</p>
         </div>
       </div>
     </>

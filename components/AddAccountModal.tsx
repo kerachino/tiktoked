@@ -11,6 +11,7 @@ interface AddAccountModalProps {
   onClose: () => void;
   onAccountAdded: (newAccount: TikTokAccount) => void;
   allAccounts: TikTokAccount[];
+  currentListId: string; // 現在のリストIDを追加
 }
 
 export default function AddAccountModal({
@@ -18,6 +19,7 @@ export default function AddAccountModal({
   onClose,
   onAccountAdded,
   allAccounts,
+  currentListId, // 現在のリストIDを受け取る
 }: AddAccountModalProps) {
   const [newAccount, setNewAccount] = useState({
     accountName: "",
@@ -61,10 +63,11 @@ export default function AddAccountModal({
         LastCheckedDate: formattedDate,
         AddedDate: formattedDate,
         Favorite: newAccount.favorite,
+        Deleted: false, // 削除済みフラグを追加
       };
 
-      // Firebaseに追加
-      const accountRef = ref(db, `__collections__/myfollow/${newKey}`);
+      // Firebaseに追加（現在のリストに追加）
+      const accountRef = ref(db, `__collections__/${currentListId}/${newKey}`);
       await set(accountRef, accountData);
 
       // 親コンポーネントに新しいアカウントを通知
@@ -76,6 +79,7 @@ export default function AddAccountModal({
         lastCheckedDate: formattedDate,
         addedDate: formattedDate,
         favorite: newAccount.favorite,
+        deleted: false, // 削除済みフラグを追加
       };
 
       onAccountAdded(newAccountObj);
@@ -137,6 +141,13 @@ export default function AddAccountModal({
           </div>
 
           <div className="space-y-3 md:space-y-4">
+            {/* 現在のリスト表示 */}
+            <div className="mb-2 p-2 bg-blue-50 border border-blue-200 rounded">
+              <p className="text-sm text-blue-700 font-medium">
+                追加先リスト: <span className="font-bold">{currentListId}</span>
+              </p>
+            </div>
+
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1 md:mb-2">
                 アカウント名 <span className="text-red-500">*</span>
@@ -183,7 +194,7 @@ export default function AddAccountModal({
               </label>
               <input
                 type="number"
-                min="-2"
+                min="-1"
                 max="100"
                 value={newAccount.amount}
                 onChange={(e) =>
@@ -192,7 +203,7 @@ export default function AddAccountModal({
                 className="w-full px-3 md:px-4 py-1 md:py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
               />
               <p className="mt-1 text-xs text-gray-500">
-                初期値（-2:削除済み, -1:無視してよい, 0:通常）
+                初期値（-1:無視してよい, 0:通常）
               </p>
             </div>
 
@@ -225,6 +236,7 @@ export default function AddAccountModal({
                   <li>• 最終確認日: 今日の日付</li>
                   <li>• 追加日: 今日の日付</li>
                   <li>• 自動的にID採番されます</li>
+                  <li>• 削除済みフラグ: false（初期値）</li>
                 </ul>
               </div>
             </div>

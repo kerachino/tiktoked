@@ -11,6 +11,7 @@ interface BulkAddModalProps {
   onClose: () => void;
   onAccountsAdded: (newAccounts: TikTokAccount[]) => void;
   allAccounts: TikTokAccount[];
+  currentListId: string; // 現在のリストIDを追加
 }
 
 interface PreviewAccount {
@@ -28,6 +29,7 @@ export default function BulkAddModal({
   onClose,
   onAccountsAdded,
   allAccounts,
+  currentListId, // 現在のリストIDを受け取る
 }: BulkAddModalProps) {
   const [bulkHtml, setBulkHtml] = useState("");
   const [bulkProcessing, setBulkProcessing] = useState(false);
@@ -201,10 +203,14 @@ export default function BulkAddModal({
           LastCheckedDate: formattedDate,
           AddedDate: formattedDate,
           Favorite: false,
+          Deleted: false, // 削除済みフラグを追加
         };
 
-        // Firebaseに追加
-        const accountRef = ref(db, `__collections__/myfollow/${newKey}`);
+        // Firebaseに追加（現在のリストに追加）
+        const accountRef = ref(
+          db,
+          `__collections__/${currentListId}/${newKey}`
+        );
         await set(accountRef, accountData);
 
         // ローカル状態に追加
@@ -216,6 +222,7 @@ export default function BulkAddModal({
           lastCheckedDate: formattedDate,
           addedDate: formattedDate,
           favorite: false,
+          deleted: false, // 削除済みフラグを追加
         });
 
         addedCount++;
@@ -284,6 +291,13 @@ export default function BulkAddModal({
           </div>
 
           <div className="space-y-4 md:space-y-6">
+            {/* 現在のリスト表示 */}
+            <div className="mb-2 p-2 bg-blue-50 border border-blue-200 rounded">
+              <p className="text-sm text-blue-700 font-medium">
+                追加先リスト: <span className="font-bold">{currentListId}</span>
+              </p>
+            </div>
+
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1 md:mb-2">
                 TikTokのHTMLを貼り付けてください
@@ -442,6 +456,7 @@ export default function BulkAddModal({
                   <li>• 追加日: 今日の日付</li>
                   <li>• Amount: 0（初期値）</li>
                   <li>• Favorite: false（初期値）</li>
+                  <li>• 削除済みフラグ: false（初期値）</li>
                   <li>• 重複するIDは自動的にスキップされます</li>
                   <li>• 自動的に連番でIDが採番されます</li>
                 </ul>

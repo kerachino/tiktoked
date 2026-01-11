@@ -81,6 +81,12 @@ export default function Home() {
     "accountName"
   );
 
+  // 並び替え順序を保持するための追加状態
+  const [isSortingLocked, setIsSortingLocked] = useState(false);
+  const [lockedSortedAccounts, setLockedSortedAccounts] = useState<
+    TikTokAccount[]
+  >([]);
+
   // 日付フィルター関連の状態
   const [dateFilterInput, setDateFilterInput] = useState<{
     startDate: string;
@@ -817,6 +823,7 @@ export default function Home() {
   useEffect(() => {
     if (allAccounts.length === 0) {
       setFilteredAccounts([]);
+      setLockedSortedAccounts([]);
       return;
     }
 
@@ -887,11 +894,18 @@ export default function Home() {
     }
 
     debugLog(`フィルタリング完了: ${filtered.length}件`);
-    debugLog(
-      `比較モード: ${listComparisonMode}, 選択された比較リスト: ${selectedComparisonListIds.length}個`
-    );
-    debugLog(`マイフォロー除外: ${excludeMyFollow ? "有効" : "無効"}`);
     setFilteredAccounts(filtered);
+
+    // フィルターが変更されたら並び替えロックを解除
+    if (
+      searchQuery ||
+      dateFilter.enabled ||
+      showFavoritesOnly ||
+      listComparisonMode !== "none" ||
+      selectedComparisonListIds.length > 0
+    ) {
+      setIsSortingLocked(false);
+    }
   }, [
     allAccounts,
     comparisonListsInfo,
@@ -911,6 +925,28 @@ export default function Home() {
   useEffect(() => {
     if (filteredAccounts.length === 0) {
       setSortedAccounts([]);
+      setLockedSortedAccounts([]);
+      return;
+    }
+
+    // ソートがロックされている場合、ロックされた順序を使用
+    if (isSortingLocked && lockedSortedAccounts.length > 0) {
+      // フィルターされたアカウントとロックされたアカウントの内容が一致することを確認
+      const filteredAccountKeys = new Set(
+        filteredAccounts.map((acc) => acc.key)
+      );
+      const validLockedAccounts = lockedSortedAccounts.filter((acc) =>
+        filteredAccountKeys.has(acc.key)
+      );
+
+      // 不足しているアカウントを追加（新しくフィルターされたアカウント）
+      const missingAccounts = filteredAccounts.filter(
+        (acc) =>
+          !lockedSortedAccounts.some((lockedAcc) => lockedAcc.key === acc.key)
+      );
+
+      const combinedAccounts = [...validLockedAccounts, ...missingAccounts];
+      setSortedAccounts(combinedAccounts);
       return;
     }
 
@@ -974,8 +1010,15 @@ export default function Home() {
     });
 
     debugLog(`ソート処理完了: ${sorted.length}件`);
+
+    // ソートされた結果を保存
     setSortedAccounts(sorted);
-  }, [filteredAccounts, sortField, sortOrder]);
+
+    // ソートがロックされていない場合のみ、ロックされた順序を更新
+    if (!isSortingLocked) {
+      setLockedSortedAccounts(sorted);
+    }
+  }, [filteredAccounts, sortField, sortOrder, isSortingLocked]);
 
   // 表示するアカウントを計算（ページネーション）
   useEffect(() => {
@@ -1012,6 +1055,10 @@ export default function Home() {
 
   // ソートハンドラー
   const handleSort = (field: SortField) => {
+    // ソート時にロックを解除
+    setIsSortingLocked(false);
+    // 新しいソートが適用されるので、lockedSortedAccountsはクリアする必要はありません
+
     if (sortField === field) {
       const newOrder = sortOrder === "asc" ? "desc" : "asc";
       setSortOrder(newOrder);
@@ -1062,6 +1109,9 @@ export default function Home() {
   // お気に入りを切り替え
   const toggleFavorite = async (accountKey: string) => {
     try {
+      // 並び替えを一時的にロック
+      setIsSortingLocked(true);
+
       const account = allAccounts.find((acc) => acc.key === accountKey);
       if (!account) return;
 
@@ -1075,11 +1125,25 @@ export default function Home() {
         Favorite: newFavorite,
       });
 
-      setAllAccounts((prevAccounts) =>
-        prevAccounts.map((acc) =>
-          acc.key === accountKey ? { ...acc, favorite: newFavorite } : acc
-        )
+      // 状態更新
+      const updatedAllAccounts = allAccounts.map((acc) =>
+        acc.key === accountKey ? { ...acc, favorite: newFavorite } : acc
       );
+
+      setAllAccounts(updatedAllAccounts);
+
+      // 現在のソート順を保持したままアカウントを更新
+      setLockedSortedAccounts((prev) => {
+        if (prev.length === 0) return prev;
+        return prev.map((acc) =>
+          acc.key === accountKey
+            ? {
+                ...acc,
+                favorite: newFavorite,
+              }
+            : acc
+        );
+      });
     } catch (error) {
       console.error("お気に入り更新エラー:", error);
       alert("お気に入りの更新に失敗しました。");
@@ -1089,6 +1153,9 @@ export default function Home() {
   // 削除済み状態を切り替え
   const toggleDeleted = async (accountKey: string) => {
     try {
+      // 並び替えを一時的にロック
+      setIsSortingLocked(true);
+
       const account = allAccounts.find((acc) => acc.key === accountKey);
       if (!account) return;
 
@@ -1102,13 +1169,25 @@ export default function Home() {
         Deleted: newDeleted,
       });
 
-      setAllAccounts((prevAccounts) =>
-        prevAccounts.map((acc) =>
-          acc.key === accountKey ? { ...acc, deleted: newDeleted } : acc
-        )
+      // 状態更新
+      const updatedAllAccounts = allAccounts.map((acc) =>
+        acc.key === accountKey ? { ...acc, deleted: newDeleted } : acc
       );
 
-      // リストのアカウント数を更新（削除済み状態の変更によってもカウントは変わらない）
+      setAllAccounts(updatedAllAccounts);
+
+      // 現在のソート順を保持したままアカウントを更新
+      setLockedSortedAccounts((prev) => {
+        if (prev.length === 0) return prev;
+        return prev.map((acc) =>
+          acc.key === accountKey
+            ? {
+                ...acc,
+                deleted: newDeleted,
+              }
+            : acc
+        );
+      });
     } catch (error) {
       console.error("削除済み更新エラー:", error);
       alert("削除済み状態の更新に失敗しました。");
@@ -1198,6 +1277,9 @@ export default function Home() {
       setSelectedComparisonListIds([]);
       setComparisonListsInfo([]);
       setExcludeMyFollow(false);
+      // 並び替えロックを解除
+      setIsSortingLocked(false);
+      setLockedSortedAccounts([]);
     }
   }, [currentListId, fetchAllData]);
 
@@ -1216,6 +1298,9 @@ export default function Home() {
       .padStart(2, "0")}/${today.getDate().toString().padStart(2, "0")}`;
 
     try {
+      // 並び替えを一時的にロック
+      setIsSortingLocked(true);
+
       const accountRef = ref(
         db,
         `__collections__/${currentListId}/${account.key}`
@@ -1224,13 +1309,27 @@ export default function Home() {
         LastCheckedDate: formattedDate,
       });
 
-      setAllAccounts((prevAccounts) =>
-        prevAccounts.map((acc) =>
-          acc.key === account.key
-            ? { ...acc, lastCheckedDate: formattedDate }
-            : acc
-        )
+      // 状態更新
+      const updatedAllAccounts = allAccounts.map((acc) =>
+        acc.key === account.key
+          ? { ...acc, lastCheckedDate: formattedDate }
+          : acc
       );
+
+      setAllAccounts(updatedAllAccounts);
+
+      // 現在のソート順を保持したままアカウントを更新
+      setLockedSortedAccounts((prev) => {
+        if (prev.length === 0) return prev;
+        return prev.map((acc) =>
+          acc.key === account.key
+            ? {
+                ...acc,
+                lastCheckedDate: formattedDate,
+              }
+            : acc
+        );
+      });
     } catch (error) {
       console.error("更新エラー:", error);
       alert("更新に失敗しました。");
@@ -1240,6 +1339,9 @@ export default function Home() {
   // Amountを増減（最終確認日も更新）-1が最低値
   const updateAmount = async (accountKey: string, delta: number) => {
     try {
+      // 並び替えを一時的にロック
+      setIsSortingLocked(true);
+
       const account = allAccounts.find((acc) => acc.key === accountKey);
       if (!account) return;
 
@@ -1264,8 +1366,23 @@ export default function Home() {
         LastCheckedDate: formattedDate,
       });
 
-      setAllAccounts((prevAccounts) =>
-        prevAccounts.map((acc) =>
+      // 状態更新
+      const updatedAllAccounts = allAccounts.map((acc) =>
+        acc.key === accountKey
+          ? {
+              ...acc,
+              amount: newAmount.toString(),
+              lastCheckedDate: formattedDate,
+            }
+          : acc
+      );
+
+      setAllAccounts(updatedAllAccounts);
+
+      // 現在のソート順を保持したままアカウントを更新
+      setLockedSortedAccounts((prev) => {
+        if (prev.length === 0) return prev;
+        return prev.map((acc) =>
           acc.key === accountKey
             ? {
                 ...acc,
@@ -1273,8 +1390,8 @@ export default function Home() {
                 lastCheckedDate: formattedDate,
               }
             : acc
-        )
-      );
+        );
+      });
     } catch (error) {
       console.error("Amount更新エラー:", error);
       alert("Amountの更新に失敗しました。");
@@ -1330,6 +1447,9 @@ export default function Home() {
     resetDateFilter();
     setShowFavoritesOnly(false);
     setPage(1);
+    // 並び替えロックを解除
+    setIsSortingLocked(false);
+    setLockedSortedAccounts([]);
   };
 
   // リスト比較フィルターをリセット
@@ -1338,6 +1458,9 @@ export default function Home() {
     setSelectedComparisonListIds([]);
     setComparisonListsInfo([]);
     setExcludeMyFollow(false);
+    // 並び替えロックを解除
+    setIsSortingLocked(false);
+    setLockedSortedAccounts([]);
   };
 
   // マイフォロー除外を切り替え

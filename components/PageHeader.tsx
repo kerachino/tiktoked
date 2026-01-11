@@ -14,7 +14,6 @@ interface PageHeaderProps {
   showDeleted: boolean;
   onSwitchList: (listId: string) => void;
   onShowListManager: () => void;
-  onRefreshData: () => void;
   onShowAddModal: () => void;
   onShowBulkAddModal: () => void;
   onToggleFavoritesOnly: () => void;
@@ -35,7 +34,6 @@ export default function PageHeader({
   showDeleted,
   onSwitchList,
   onShowListManager,
-  onRefreshData,
   onShowAddModal,
   onShowBulkAddModal,
   onToggleFavoritesOnly,
@@ -105,7 +103,6 @@ export default function PageHeader({
         <p className="text-sm md:text-base text-gray-600">
           全{sortedAccountsLength}件のアカウント（
           {displayedAccountsLength}件表示中）
-          {hasMore && `（さらに読み込み可能）`}
         </p>
         <div className="text-xs md:text-sm bg-blue-100 text-blue-800 px-2 md:px-3 py-1 rounded-full">
           ソート: {getSortFieldName(sortField)} (
@@ -118,12 +115,6 @@ export default function PageHeader({
             : 0}
           /{Math.ceil(sortedAccountsLength / 10) || 1}
         </div>
-        <button
-          onClick={onRefreshData}
-          className="text-xs md:text-sm bg-gray-100 text-gray-700 px-2 md:px-3 py-1 rounded-full hover:bg-gray-200 transition-colors"
-        >
-          データ更新
-        </button>
         <div className="flex space-x-2">
           <button
             onClick={onShowAddModal}

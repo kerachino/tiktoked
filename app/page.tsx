@@ -16,6 +16,7 @@ import ListManagerModal from "@/components/ListManagerModal";
 import PageHeader from "@/components/PageHeader";
 import SearchFilterSection from "@/components/SearchFilterSection";
 import ListInfoCard from "@/components/ListInfoCard";
+import LoadingSpinner from "@/components/LoadingSpinner";
 
 // デバッグ用のログ関数
 const debugLog = (...args: any[]) => {
@@ -43,6 +44,16 @@ const DEFAULT_LISTS: AccountList[] = [
     accountCount: 0,
   },
 ];
+
+// リスト比較モードの型定義
+type ListComparisonMode = "none" | "intersection" | "difference";
+
+// 比較リスト情報の型定義
+interface ComparisonListInfo {
+  listId: string;
+  listName: string;
+  accounts: TikTokAccount[];
+}
 
 export default function Home() {
   const [currentListId, setCurrentListId] = useState<string>("myfollow");
@@ -101,12 +112,149 @@ export default function Home() {
   const [newListName, setNewListName] = useState("");
   const [newListDescription, setNewListDescription] = useState("");
 
+  // リスト比較関連の状態
+  const [listComparisonMode, setListComparisonMode] =
+    useState<ListComparisonMode>("none");
+  const [selectedComparisonListIds, setSelectedComparisonListIds] = useState<
+    string[]
+  >([]);
+  const [comparisonListsInfo, setComparisonListsInfo] = useState<
+    ComparisonListInfo[]
+  >([]);
+  const [loadingComparisonLists, setLoadingComparisonLists] = useState<
+    string[]
+  >([]);
+  // マイフォロー除外状態
+  const [excludeMyFollow, setExcludeMyFollow] = useState(false);
+  const [myFollowAccounts, setMyFollowAccounts] = useState<TikTokAccount[]>([]);
+  const [loadingMyFollow, setLoadingMyFollow] = useState(false);
+
   const observerRef = useRef<IntersectionObserver | null>(null);
   const loadMoreRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
   // Firebaseクエリの制限
   const PAGE_SIZE = 10;
+
+  // マイフォローリストのアカウントを取得
+  const fetchMyFollowAccounts = useCallback(async () => {
+    try {
+      setLoadingMyFollow(true);
+      const myFollowRef = ref(db, "__collections__/myfollow");
+      const snapshot = await get(myFollowRef);
+
+      if (snapshot.exists()) {
+        const data = snapshot.val();
+        const accounts: TikTokAccount[] = [];
+
+        Object.keys(data).forEach((key) => {
+          const account = data[key];
+          if (account && typeof account === "object") {
+            accounts.push({
+              key: key,
+              accountName: account.AccountName || account.accountName || "",
+              accountId: account.AccountID || account.accountId || "",
+              lastCheckedDate:
+                account.LastCheckedDate || account.lastCheckedDate || "",
+              amount: account.Amount || account.amount || "",
+              addedDate: account.AddedDate || account.addedDate || "",
+              favorite: account.Favorite || account.favorite || false,
+              deleted: account.Deleted || account.deleted || false,
+            });
+          }
+        });
+
+        setMyFollowAccounts(accounts);
+        debugLog(`マイフォローアカウント取得: ${accounts.length}件`);
+      } else {
+        setMyFollowAccounts([]);
+        debugLog("マイフォローアカウントなし");
+      }
+    } catch (error) {
+      console.error("マイフォローアカウント取得エラー:", error);
+      setMyFollowAccounts([]);
+    } finally {
+      setLoadingMyFollow(false);
+    }
+  }, []);
+
+  // 比較リストのアカウントを取得
+  const fetchComparisonListAccounts = useCallback(
+    async (listId: string) => {
+      if (!listId || listId === currentListId) {
+        return null;
+      }
+
+      try {
+        // ローディング状態に追加
+        setLoadingComparisonLists((prev) => [...prev, listId]);
+
+        const accountsRef = ref(db, `__collections__/${listId}`);
+        const snapshot = await get(accountsRef);
+
+        if (snapshot.exists()) {
+          const data = snapshot.val();
+          const accounts: TikTokAccount[] = [];
+
+          Object.keys(data).forEach((key) => {
+            const account = data[key];
+            if (account && typeof account === "object") {
+              accounts.push({
+                key: key,
+                accountName: account.AccountName || account.accountName || "",
+                accountId: account.AccountID || account.accountId || "",
+                lastCheckedDate:
+                  account.LastCheckedDate || account.lastCheckedDate || "",
+                amount: account.Amount || account.amount || "",
+                addedDate: account.AddedDate || account.addedDate || "",
+                favorite: account.Favorite || account.favorite || false,
+                deleted: account.Deleted || account.deleted || false,
+              });
+            }
+          });
+
+          const listInfo: ComparisonListInfo = {
+            listId,
+            listName: accountLists.find((l) => l.id === listId)?.name || listId,
+            accounts,
+          };
+
+          debugLog(
+            `比較リスト ${listId} のデータ取得完了: ${accounts.length}件`
+          );
+          return listInfo;
+        }
+      } catch (error) {
+        console.error(`比較リスト ${listId} のデータ取得エラー:`, error);
+      } finally {
+        // ローディング状態から削除
+        setLoadingComparisonLists((prev) => prev.filter((id) => id !== listId));
+      }
+
+      return null;
+    },
+    [currentListId, accountLists]
+  );
+
+  // 選択されたすべての比較リストのデータを取得
+  const fetchAllComparisonLists = useCallback(
+    async (listIds: string[]) => {
+      if (listIds.length === 0) {
+        setComparisonListsInfo([]);
+        return;
+      }
+
+      const promises = listIds.map((listId) =>
+        fetchComparisonListAccounts(listId)
+      );
+      const results = await Promise.all(promises);
+      const validResults = results.filter(
+        (result): result is ComparisonListInfo => result !== null
+      );
+      setComparisonListsInfo(validResults);
+    },
+    [fetchComparisonListAccounts]
+  );
 
   // アカウントリストを取得
   const fetchAccountLists = useCallback(async () => {
@@ -415,6 +563,14 @@ export default function Home() {
         }
       }
 
+      // 比較リストからも削除
+      setSelectedComparisonListIds((prev) =>
+        prev.filter((id) => id !== listId)
+      );
+      setComparisonListsInfo((prev) =>
+        prev.filter((info) => info.listId !== listId)
+      );
+
       alert("リストを削除しました");
     } catch (error) {
       console.error("リスト削除エラー:", error);
@@ -438,6 +594,7 @@ export default function Home() {
         setSearchInput("");
         setSearchQuery("");
         setShowFavoritesOnly(false);
+        setExcludeMyFollow(false);
         setDateFilterInput({
           startDate: "",
           endDate: "",
@@ -448,6 +605,10 @@ export default function Home() {
           endDate: "",
           enabled: false,
         });
+        // リスト比較モードをリセット
+        setListComparisonMode("none");
+        setSelectedComparisonListIds([]);
+        setComparisonListsInfo([]);
         console.log(`リストを ${listId} に切り替えました`);
       } else {
         console.error(`リスト ${listId} が見つかりません`);
@@ -455,6 +616,7 @@ export default function Home() {
     },
     [accountLists]
   );
+
   // 全データを取得
   const fetchAllData = useCallback(async () => {
     if (!currentListId) return;
@@ -517,12 +679,139 @@ export default function Home() {
     }
   }, [currentListId]);
 
+  // 比較リストの選択を切り替え
+  const toggleComparisonListSelection = useCallback(
+    async (listId: string) => {
+      setSelectedComparisonListIds((prev) => {
+        const isSelected = prev.includes(listId);
+        let newSelection: string[];
+
+        if (isSelected) {
+          // 選択解除
+          newSelection = prev.filter((id) => id !== listId);
+          setComparisonListsInfo((prevInfo) =>
+            prevInfo.filter((info) => info.listId !== listId)
+          );
+        } else {
+          // 選択追加
+          newSelection = [...prev, listId];
+          // 選択したリストのデータを取得
+          fetchComparisonListAccounts(listId).then((listInfo) => {
+            if (listInfo) {
+              setComparisonListsInfo((prevInfo) => {
+                // 既存のリスト情報を更新または追加
+                const existingIndex = prevInfo.findIndex(
+                  (info) => info.listId === listId
+                );
+                if (existingIndex >= 0) {
+                  const newInfo = [...prevInfo];
+                  newInfo[existingIndex] = listInfo;
+                  return newInfo;
+                } else {
+                  return [...prevInfo, listInfo];
+                }
+              });
+            }
+          });
+        }
+
+        return newSelection;
+      });
+    },
+    [fetchComparisonListAccounts]
+  );
+
+  // すべての比較リストの選択を解除
+  const clearAllComparisonLists = useCallback(() => {
+    setSelectedComparisonListIds([]);
+    setComparisonListsInfo([]);
+  }, []);
+
   // 検索ボタン押下時の処理
   const handleSearchButtonClick = useCallback(() => {
     setSearchQuery(searchInput);
     setDateFilter(dateFilterInput);
     setPage(1);
   }, [searchInput, dateFilterInput]);
+
+  // 複数リストのアカウントを結合（和集合）
+  const combineAccountsFromMultipleLists = useCallback(
+    (listsInfo: ComparisonListInfo[]): TikTokAccount[] => {
+      const allAccountsSet = new Map<string, TikTokAccount>();
+
+      listsInfo.forEach((listInfo) => {
+        listInfo.accounts.forEach((account) => {
+          if (!allAccountsSet.has(account.accountId)) {
+            allAccountsSet.set(account.accountId, account);
+          }
+        });
+      });
+
+      return Array.from(allAccountsSet.values());
+    },
+    []
+  );
+
+  // アカウントをリスト比較に基づいてフィルタリング
+  const filterAccountsByComparison = useCallback(
+    (
+      accounts: TikTokAccount[],
+      comparisonLists: ComparisonListInfo[],
+      mode: ListComparisonMode
+    ): TikTokAccount[] => {
+      if (mode === "none" || comparisonLists.length === 0) {
+        return accounts;
+      }
+
+      // すべての比較リストのアカウントを結合（和集合）
+      const allComparisonAccounts =
+        combineAccountsFromMultipleLists(comparisonLists);
+
+      if (allComparisonAccounts.length === 0) {
+        return accounts;
+      }
+
+      // 比較リストのアカウントIDのセットを作成
+      const comparisonAccountIds = new Set(
+        allComparisonAccounts.map((acc) => acc.accountId)
+      );
+
+      if (mode === "intersection") {
+        // 共通のアカウント（現在のリストと比較リストのいずれかに存在する）
+        return accounts.filter((account) =>
+          comparisonAccountIds.has(account.accountId)
+        );
+      } else if (mode === "difference") {
+        // 現在のリストにのみ存在するアカウント（比較リストには存在しない）
+        return accounts.filter(
+          (account) => !comparisonAccountIds.has(account.accountId)
+        );
+      }
+
+      return accounts;
+    },
+    [combineAccountsFromMultipleLists]
+  );
+
+  // マイフォローアカウントを除外するフィルター
+  const filterOutMyFollowAccounts = useCallback(
+    (accounts: TikTokAccount[]): TikTokAccount[] => {
+      if (!excludeMyFollow || myFollowAccounts.length === 0) {
+        return accounts;
+      }
+
+      // マイフォローアカウントのIDセットを作成
+      const myFollowAccountIds = new Set(
+        myFollowAccounts.map((acc) => acc.accountId)
+      );
+
+      // マイフォローに含まれないアカウントのみを残す
+      return accounts.filter(
+        (account) => !myFollowAccountIds.has(account.accountId)
+      );
+    },
+    [excludeMyFollow, myFollowAccounts]
+  );
 
   // フィルタリングされたアカウントを計算
   useEffect(() => {
@@ -532,6 +821,18 @@ export default function Home() {
     }
 
     let filtered = [...allAccounts];
+
+    // まずリスト比較フィルターを適用
+    filtered = filterAccountsByComparison(
+      filtered,
+      comparisonListsInfo,
+      listComparisonMode
+    );
+
+    // リスト比較モードが "intersection" かつマイフォロー除外が有効な場合
+    if (listComparisonMode === "intersection" && excludeMyFollow) {
+      filtered = filterOutMyFollowAccounts(filtered);
+    }
 
     // 削除済みフィルター
     if (!showDeleted) {
@@ -586,14 +887,24 @@ export default function Home() {
     }
 
     debugLog(`フィルタリング完了: ${filtered.length}件`);
+    debugLog(
+      `比較モード: ${listComparisonMode}, 選択された比較リスト: ${selectedComparisonListIds.length}個`
+    );
+    debugLog(`マイフォロー除外: ${excludeMyFollow ? "有効" : "無効"}`);
     setFilteredAccounts(filtered);
   }, [
     allAccounts,
+    comparisonListsInfo,
+    listComparisonMode,
+    selectedComparisonListIds,
     searchQuery,
     searchType,
     dateFilter,
     showFavoritesOnly,
     showDeleted,
+    excludeMyFollow,
+    filterAccountsByComparison,
+    filterOutMyFollowAccounts,
   ]);
 
   // ソートされたアカウントを計算
@@ -873,14 +1184,20 @@ export default function Home() {
     const initializeData = async () => {
       await fetchAccountLists();
       await fetchAllData();
+      await fetchMyFollowAccounts();
     };
     initializeData();
-  }, [fetchAccountLists]);
+  }, [fetchAccountLists, fetchMyFollowAccounts]);
 
   // リストが変更されたときにデータを再取得
   useEffect(() => {
     if (currentListId) {
       fetchAllData();
+      // リスト比較モードをリセット
+      setListComparisonMode("none");
+      setSelectedComparisonListIds([]);
+      setComparisonListsInfo([]);
+      setExcludeMyFollow(false);
     }
   }, [currentListId, fetchAllData]);
 
@@ -1015,6 +1332,19 @@ export default function Home() {
     setPage(1);
   };
 
+  // リスト比較フィルターをリセット
+  const resetListComparison = () => {
+    setListComparisonMode("none");
+    setSelectedComparisonListIds([]);
+    setComparisonListsInfo([]);
+    setExcludeMyFollow(false);
+  };
+
+  // マイフォロー除外を切り替え
+  const toggleExcludeMyFollow = () => {
+    setExcludeMyFollow((prev) => !prev);
+  };
+
   // アカウント追加時のハンドラー
   const handleAccountAdded = useCallback(
     (newAccount: TikTokAccount) => {
@@ -1046,6 +1376,7 @@ export default function Home() {
     },
     [currentListId]
   );
+
   // ソートフィールド名を日本語に変換する関数
   const getSortFieldName = useCallback((field: string): string => {
     switch (field) {
@@ -1070,15 +1401,9 @@ export default function Home() {
     }
   }, []);
 
+  // ローディング状態の表示
   if (loading || loadingLists) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="flex flex-col items-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mb-4"></div>
-          <div className="text-xl">データを読み込み中...</div>
-        </div>
-      </div>
-    );
+    return <LoadingSpinner />;
   }
 
   const totalPages = Math.ceil(sortedAccounts.length / PAGE_SIZE);
@@ -1102,7 +1427,6 @@ export default function Home() {
           showDeleted={showDeleted}
           onSwitchList={switchList}
           onShowListManager={() => setShowListManager(true)}
-          onRefreshData={fetchAllData}
           onShowAddModal={() => setShowAddModal(true)}
           onShowBulkAddModal={() => setShowBulkAddModal(true)}
           onToggleFavoritesOnly={() => setShowFavoritesOnly(!showFavoritesOnly)}
@@ -1118,6 +1442,271 @@ export default function Home() {
             formatDate={formatDate}
           />
         )}
+
+        {/* リスト比較フィルターセクション */}
+        <div className="bg-white rounded-lg shadow-md p-4 mb-4">
+          <div className="flex flex-col space-y-3">
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-semibold text-gray-800">
+                リスト比較フィルター
+              </h3>
+              <button
+                onClick={resetListComparison}
+                className="px-3 py-1 text-sm bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-md transition-colors"
+              >
+                リセット
+              </button>
+            </div>
+
+            <div className="flex flex-wrap gap-4">
+              <div className="flex items-center space-x-2">
+                <span className="text-sm font-medium text-gray-700">
+                  比較モード:
+                </span>
+                <select
+                  value={listComparisonMode}
+                  onChange={(e) => {
+                    setListComparisonMode(e.target.value as ListComparisonMode);
+                    setPage(1);
+                  }}
+                  className="border border-gray-300 rounded-md px-3 py-1 text-sm"
+                >
+                  <option value="none">比較しない</option>
+                  <option value="intersection">共通のアカウントのみ表示</option>
+                  <option value="difference">
+                    このリストのみのアカウントを表示
+                  </option>
+                </select>
+              </div>
+
+              {listComparisonMode !== "none" && (
+                <div className="flex items-center space-x-2">
+                  <button
+                    onClick={clearAllComparisonLists}
+                    className="px-3 py-1 text-sm bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-md transition-colors"
+                    disabled={selectedComparisonListIds.length === 0}
+                  >
+                    すべてクリア
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {listComparisonMode !== "none" && (
+              <div className="space-y-2">
+                <div className="flex items-center">
+                  <span className="text-sm font-medium text-gray-700 mr-3">
+                    比較するリスト ({selectedComparisonListIds.length}個選択):
+                  </span>
+                  {selectedComparisonListIds.length === 0 && (
+                    <span className="text-sm text-gray-500">
+                      リストを選択してください
+                    </span>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
+                  {accountLists
+                    .filter((list) => list.id !== currentListId)
+                    .map((list) => {
+                      const isSelected = selectedComparisonListIds.includes(
+                        list.id
+                      );
+                      const isLoading = loadingComparisonLists.includes(
+                        list.id
+                      );
+                      const listInfo = comparisonListsInfo.find(
+                        (info) => info.listId === list.id
+                      );
+
+                      return (
+                        <div
+                          key={list.id}
+                          className={`flex items-center p-3 rounded-lg border cursor-pointer transition-all ${
+                            isSelected
+                              ? "bg-blue-50 border-blue-300"
+                              : "bg-gray-50 border-gray-200 hover:bg-gray-100"
+                          }`}
+                          onClick={() => toggleComparisonListSelection(list.id)}
+                        >
+                          <div className="flex items-center flex-1">
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={() => {}}
+                              className="h-4 w-4 text-blue-600 rounded focus:ring-blue-500"
+                              readOnly
+                            />
+                            <div className="ml-3 flex-1">
+                              <div className="flex items-center justify-between">
+                                <span className="text-sm font-medium text-gray-700">
+                                  {list.name}
+                                </span>
+                                {isLoading && (
+                                  <span className="text-xs text-gray-500">
+                                    読み込み中...
+                                  </span>
+                                )}
+                              </div>
+                              <div className="text-xs text-gray-500 mt-1">
+                                {listInfo ? (
+                                  <span>
+                                    {listInfo.accounts.length}件のアカウント
+                                  </span>
+                                ) : (
+                                  <span>{list.accountCount}件のアカウント</span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                </div>
+
+                {selectedComparisonListIds.length > 0 && (
+                  <div className="mt-3 p-3 bg-gray-50 rounded-lg">
+                    <div className="text-sm text-gray-600">
+                      {listComparisonMode === "intersection" ? (
+                        <div>
+                          <p className="font-medium mb-1">
+                            共通のアカウントのみ表示:
+                          </p>
+                          <p className="mb-2">
+                            現在のリスト「{currentList?.name}」と選択された
+                            {selectedComparisonListIds.length}個のリストの
+                            <span className="font-medium">
+                              いずれかに存在する
+                            </span>
+                            アカウントを表示します
+                          </p>
+                          <div className="flex flex-wrap gap-1 mb-3">
+                            {selectedComparisonListIds.map((listId) => {
+                              const list = accountLists.find(
+                                (l) => l.id === listId
+                              );
+                              const listInfo = comparisonListsInfo.find(
+                                (info) => info.listId === listId
+                              );
+                              return list ? (
+                                <div key={listId} className="flex items-center">
+                                  <span className="px-2 py-1 bg-blue-100 text-blue-800 text-xs rounded mr-1">
+                                    {list.name}
+                                    {listInfo && (
+                                      <span className="ml-1">
+                                        ({listInfo.accounts.length}件)
+                                      </span>
+                                    )}
+                                  </span>
+                                </div>
+                              ) : null;
+                            })}
+                          </div>
+                          {/* マイフォロー除外ボタン - 共通のアカウントのみ表示モードでのみ表示 */}
+                          <div className="mt-3 flex items-center">
+                            <button
+                              onClick={toggleExcludeMyFollow}
+                              className={`px-4 py-2 text-sm rounded-md flex items-center transition-colors ${
+                                excludeMyFollow
+                                  ? "bg-red-100 text-red-700 border border-red-300"
+                                  : "bg-gray-100 text-gray-700 border border-gray-300 hover:bg-gray-200"
+                              }`}
+                              disabled={loadingMyFollow}
+                            >
+                              {loadingMyFollow ? (
+                                <>
+                                  <span className="animate-spin mr-2">⟳</span>
+                                  <span>読み込み中...</span>
+                                </>
+                              ) : (
+                                <>
+                                  <span className="mr-2">
+                                    {excludeMyFollow ? "✓" : "○"}
+                                  </span>
+                                  <span>
+                                    {excludeMyFollow
+                                      ? "マイフォローを除外中"
+                                      : "マイフォローを除外する"}
+                                  </span>
+                                </>
+                              )}
+                            </button>
+                            {excludeMyFollow && (
+                              <div className="ml-3 text-xs text-gray-600">
+                                <p>
+                                  マイフォローから除外したアカウント数:{" "}
+                                  {myFollowAccounts.length}件
+                                </p>
+                                <p>
+                                  除外後の共通アカウント数:{" "}
+                                  {filteredAccounts.length}件
+                                </p>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      ) : (
+                        <div>
+                          <p className="font-medium mb-1">
+                            このリストのみのアカウントを表示:
+                          </p>
+                          <p className="mb-2">
+                            「{currentList?.name}」にのみ存在し、
+                            <span className="font-medium">
+                              選択された{selectedComparisonListIds.length}
+                              個のリストのいずれにも存在しない
+                            </span>
+                            アカウントを表示します
+                          </p>
+                          <div className="flex flex-wrap gap-1 mb-3">
+                            {selectedComparisonListIds.map((listId) => {
+                              const list = accountLists.find(
+                                (l) => l.id === listId
+                              );
+                              const listInfo = comparisonListsInfo.find(
+                                (info) => info.listId === listId
+                              );
+                              return list ? (
+                                <div key={listId} className="flex items-center">
+                                  <span className="px-2 py-1 bg-red-100 text-red-800 text-xs rounded mr-1">
+                                    {list.name}
+                                    {listInfo && (
+                                      <span className="ml-1">
+                                        ({listInfo.accounts.length}件)
+                                      </span>
+                                    )}
+                                  </span>
+                                </div>
+                              ) : null;
+                            })}
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="mt-3 text-xs">
+                        <p>
+                          比較リストの総アカウント数:{" "}
+                          {
+                            combineAccountsFromMultipleLists(
+                              comparisonListsInfo
+                            ).length
+                          }
+                          件（重複除く）
+                        </p>
+                        <p>
+                          現在のリストのアカウント数: {allAccounts.length}件
+                        </p>
+                        <p className="mt-1 text-gray-700 font-medium">
+                          フィルター適用後: {filteredAccounts.length}件
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
 
         {/* 検索とフィルターセクション */}
         <SearchFilterSection
@@ -1155,6 +1744,17 @@ export default function Home() {
           onManualLoadMore={handleManualLoadMore}
           loadMoreRef={loadMoreRef}
           showDeleted={showDeleted}
+          listComparisonMode={listComparisonMode}
+          comparisonListNames={
+            selectedComparisonListIds.length > 0
+              ? selectedComparisonListIds.map((id) => {
+                  const list = accountLists.find((l) => l.id === id);
+                  return list ? list.name : id;
+                })
+              : []
+          }
+          excludeMyFollow={excludeMyFollow}
+          myFollowAccountsCount={myFollowAccounts.length}
         />
       </div>
 
